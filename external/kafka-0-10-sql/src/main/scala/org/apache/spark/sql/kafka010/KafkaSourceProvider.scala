@@ -20,54 +20,56 @@ package org.apache.spark.sql.kafka010
 import java.{util => ju}
 import java.util.{Locale, UUID}
 
-import scala.collection.JavaConverters._
+import org.apache.avro.{Schema, SchemaParseException}
 
+import scala.collection.JavaConverters._
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer}
-
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.{AnalysisException, DataFrame, SaveMode, SQLContext}
+import org.apache.spark.sql.{AnalysisException, DataFrame, SQLContext, SaveMode}
 import org.apache.spark.sql.execution.streaming.{Sink, Source}
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
 
 /**
- * The provider class for the [[KafkaSource]]. This provider is designed such that it throws
- * IllegalArgumentException when the Kafka Dataset is created, so that it can catch
- * missing options even before the query is started.
- */
+  * The provider class for the [[KafkaSource]]. This provider is designed such that it throws
+  * IllegalArgumentException when the Kafka Dataset is created, so that it can catch
+  * missing options even before the query is started.
+  */
 private[kafka010] class KafkaSourceProvider extends DataSourceRegister
-    with StreamSourceProvider
-    with StreamSinkProvider
-    with RelationProvider
-    with CreatableRelationProvider
-    with Logging {
+  with StreamSourceProvider
+  with StreamSinkProvider
+  with RelationProvider
+  with CreatableRelationProvider
+  with Logging {
+
   import KafkaSourceProvider._
 
-  override def shortName(): String = "kafka"
+  override def shortName(): String = "kafka-avro"
 
   /**
-   * Returns the name and schema of the source. In addition, it also verifies whether the options
-   * are correct and sufficient to create the [[KafkaSource]] when the query is started.
-   */
+    * Returns the name and schema of the source. In addition, it also verifies whether the options
+    * are correct and sufficient to create the [[KafkaSource]] when the query is started.
+    */
   override def sourceSchema(
-      sqlContext: SQLContext,
-      schema: Option[StructType],
-      providerName: String,
-      parameters: Map[String, String]): (String, StructType) = {
+                             sqlContext: SQLContext,
+                             schema: Option[StructType],
+                             providerName: String,
+                             parameters: Map[String, String]): (String, StructType) = {
     validateStreamOptions(parameters)
-    require(schema.isEmpty, "Kafka source has a fixed schema and cannot be set with a custom one")
-    (shortName(), KafkaOffsetReader.kafkaSchema)
+    require(!schema.isEmpty, "Kafka-Avro source must be set with a custom schema")
+    (shortName(), schema.get)
   }
 
   override def createSource(
-      sqlContext: SQLContext,
-      metadataPath: String,
-      schema: Option[StructType],
-      providerName: String,
-      parameters: Map[String, String]): Source = {
+                             sqlContext: SQLContext,
+                             metadataPath: String,
+                             schema: Option[StructType],
+                             providerName: String,
+                             parameters: Map[String, String]): Source = {
+    require(!schema.isEmpty, "Kafka-Avro source must be set with a custom schema")
     validateStreamOptions(parameters)
     // Each running query should use its own group id. Otherwise, the query may be only assigned
     // partial data since Kafka will assign partitions to multiple consumers having the same group
@@ -94,6 +96,7 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
     new KafkaSource(
       sqlContext,
       kafkaOffsetReader,
+      schema.get,
       kafkaParamsForExecutors(specifiedKafkaParams, uniqueGroupId),
       parameters,
       metadataPath,
@@ -102,14 +105,14 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
   }
 
   /**
-   * Returns a new base relation with the given parameters.
-   *
-   * @note The parameters' keywords are case insensitive and this insensitivity is enforced
-   *       by the Map that is passed to the function.
-   */
+    * Returns a new base relation with the given parameters.
+    *
+    * @note The parameters' keywords are case insensitive and this insensitivity is enforced
+    *       by the Map that is passed to the function.
+    */
   override def createRelation(
-      sqlContext: SQLContext,
-      parameters: Map[String, String]): BaseRelation = {
+                               sqlContext: SQLContext,
+                               parameters: Map[String, String]): BaseRelation = {
     validateBatchOptions(parameters)
     val caseInsensitiveParams = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }
     val specifiedKafkaParams =
@@ -127,6 +130,8 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
       ENDING_OFFSETS_OPTION_KEY, LatestOffsetRangeLimit)
     assert(endingRelationOffsets != EarliestOffsetRangeLimit)
 
+    val avroSchema = KafkaSourceProvider.AVRO_SCHEMA
+
     new KafkaRelation(
       sqlContext,
       strategy(caseInsensitiveParams),
@@ -134,14 +139,14 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
       specifiedKafkaParams = specifiedKafkaParams,
       failOnDataLoss = failOnDataLoss(caseInsensitiveParams),
       startingOffsets = startingRelationOffsets,
-      endingOffsets = endingRelationOffsets)
+      endingOffsets = endingRelationOffsets,avroSchema)
   }
 
   override def createSink(
-      sqlContext: SQLContext,
-      parameters: Map[String, String],
-      partitionColumns: Seq[String],
-      outputMode: OutputMode): Sink = {
+                           sqlContext: SQLContext,
+                           parameters: Map[String, String],
+                           partitionColumns: Seq[String],
+                           outputMode: OutputMode): Sink = {
     val defaultTopic = parameters.get(TOPIC_OPTION_KEY).map(_.trim)
     val specifiedKafkaParams = kafkaParamsForProducer(parameters)
     new KafkaSink(sqlContext,
@@ -149,10 +154,10 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
   }
 
   override def createRelation(
-      outerSQLContext: SQLContext,
-      mode: SaveMode,
-      parameters: Map[String, String],
-      data: DataFrame): BaseRelation = {
+                               outerSQLContext: SQLContext,
+                               mode: SaveMode,
+                               parameters: Map[String, String],
+                               data: DataFrame): BaseRelation = {
     mode match {
       case SaveMode.Overwrite | SaveMode.Ignore =>
         throw new AnalysisException(s"Save mode $mode not allowed for Kafka. " +
@@ -171,10 +176,15 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
      */
     new BaseRelation {
       override def sqlContext: SQLContext = unsupportedException
+
       override def schema: StructType = unsupportedException
+
       override def needConversion: Boolean = unsupportedException
+
       override def sizeInBytes: Long = unsupportedException
+
       override def unhandledFilters(filters: Array[Filter]): Array[Filter] = unsupportedException
+
       private def unsupportedException =
         throw new UnsupportedOperationException("BaseRelation from Kafka write " +
           "operation is not usable.")
@@ -189,8 +199,7 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
           + "are serialized with ByteArraySerializer.")
     }
 
-    if (caseInsensitiveParams.contains(s"kafka.${ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG}"))
-    {
+    if (caseInsensitiveParams.contains(s"kafka.${ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG}")) {
       throw new IllegalArgumentException(
         s"Kafka option '${ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG}' is not supported as "
           + "value are serialized with ByteArraySerializer.")
@@ -200,22 +209,22 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
       .filter(_.toLowerCase(Locale.ROOT).startsWith("kafka."))
       .map { k => k.drop(6).toString -> parameters(k) }
       .toMap + (ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG -> classOf[ByteArraySerializer].getName,
-        ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG -> classOf[ByteArraySerializer].getName)
+      ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG -> classOf[ByteArraySerializer].getName)
   }
 
   private def strategy(caseInsensitiveParams: Map[String, String]) =
-      caseInsensitiveParams.find(x => STRATEGY_OPTION_KEYS.contains(x._1)).get match {
-    case ("assign", value) =>
-      AssignStrategy(JsonUtils.partitions(value))
-    case ("subscribe", value) =>
-      SubscribeStrategy(value.split(",").map(_.trim()).filter(_.nonEmpty))
-    case ("subscribepattern", value) =>
-      SubscribePatternStrategy(value.trim())
-    case _ =>
-      // Should never reach here as we are already matching on
-      // matched strategy names
-      throw new IllegalArgumentException("Unknown option")
-  }
+    caseInsensitiveParams.find(x => STRATEGY_OPTION_KEYS.contains(x._1)).get match {
+      case ("assign", value) =>
+        AssignStrategy(JsonUtils.partitions(value))
+      case ("subscribe", value) =>
+        SubscribeStrategy(value.split(",").map(_.trim()).filter(_.nonEmpty))
+      case ("subscribepattern", value) =>
+        SubscribePatternStrategy(value.trim())
+      case _ =>
+        // Should never reach here as we are already matching on
+        // matched strategy names
+        throw new IllegalArgumentException("Unknown option")
+    }
 
   private def failOnDataLoss(caseInsensitiveParams: Map[String, String]) =
     caseInsensitiveParams.getOrElse(FAIL_ON_DATA_LOSS_OPTION_KEY, "true").toBoolean
@@ -223,6 +232,7 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
   private def validateGeneralOptions(parameters: Map[String, String]): Unit = {
     // Validate source options
     val caseInsensitiveParams = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }
+
     val specifiedStrategies =
       caseInsensitiveParams.filter { case (k, _) => STRATEGY_OPTION_KEYS.contains(k) }.toSeq
 
@@ -293,8 +303,7 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
           + "to explicitly deserialize the keys.")
     }
 
-    if (caseInsensitiveParams.contains(s"kafka.${ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG}"))
-    {
+    if (caseInsensitiveParams.contains(s"kafka.${ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG}")) {
       throw new IllegalArgumentException(
         s"Kafka option '${ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG}' is not supported as "
           + "value are deserialized as byte arrays with ByteArrayDeserializer. Use DataFrame "
@@ -322,6 +331,17 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
     // Stream specific options
     caseInsensitiveParams.get(ENDING_OFFSETS_OPTION_KEY).map(_ =>
       throw new IllegalArgumentException("ending offset not valid in streaming queries"))
+    if (!caseInsensitiveParams.contains(AVRO_SCHEMA)) {
+      throw new IllegalArgumentException(AVRO_SCHEMA + "must be specified for Kafka-Avro Source")
+    }
+    val avroSchema = caseInsensitiveParams.get(AVRO_SCHEMA).get
+
+    try {
+      new Schema.Parser().parse(avroSchema)
+    } catch {
+      case ex: SchemaParseException => throw new IllegalArgumentException(avroSchema +
+        "is a illegal avro schema")
+    }
     validateGeneralOptions(caseInsensitiveParams)
   }
 
@@ -371,14 +391,15 @@ private[kafka010] object KafkaSourceProvider extends Logging {
   private[kafka010] val STARTING_OFFSETS_OPTION_KEY = "startingoffsets"
   private[kafka010] val ENDING_OFFSETS_OPTION_KEY = "endingoffsets"
   private val FAIL_ON_DATA_LOSS_OPTION_KEY = "failondataloss"
+  private val AVRO_SCHEMA = "avroSchema"
   val TOPIC_OPTION_KEY = "topic"
 
   private val deserClassName = classOf[ByteArrayDeserializer].getName
 
   def getKafkaOffsetRangeLimit(
-      params: Map[String, String],
-      offsetOptionKey: String,
-      defaultOffsets: KafkaOffsetRangeLimit): KafkaOffsetRangeLimit = {
+                                params: Map[String, String],
+                                offsetOptionKey: String,
+                                defaultOffsets: KafkaOffsetRangeLimit): KafkaOffsetRangeLimit = {
     params.get(offsetOptionKey).map(_.trim) match {
       case Some(offset) if offset.toLowerCase(Locale.ROOT) == "latest" =>
         LatestOffsetRangeLimit
@@ -410,8 +431,8 @@ private[kafka010] object KafkaSourceProvider extends Logging {
       .build()
 
   def kafkaParamsForExecutors(
-      specifiedKafkaParams: Map[String, String],
-      uniqueGroupId: String): ju.Map[String, Object] =
+                               specifiedKafkaParams: Map[String, String],
+                               uniqueGroupId: String): ju.Map[String, Object] =
     ConfigUpdater("executor", specifiedKafkaParams)
       .set(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, deserClassName)
       .set(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, deserClassName)
@@ -450,4 +471,5 @@ private[kafka010] object KafkaSourceProvider extends Logging {
 
     def build(): ju.Map[String, Object] = map
   }
+
 }

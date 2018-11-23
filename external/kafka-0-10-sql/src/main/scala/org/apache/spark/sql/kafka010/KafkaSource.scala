@@ -17,66 +17,64 @@
 
 package org.apache.spark.sql.kafka010
 
-import java.{util => ju}
+
 import java.io._
 import java.nio.charset.StandardCharsets
+import java.{util => ju}
 
 import org.apache.commons.io.IOUtils
 import org.apache.kafka.common.TopicPartition
-
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.ExecutorCacheTaskLocation
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.kafka010.KafkaSource._
 import org.apache.spark.sql.types._
-import org.apache.spark.unsafe.types.UTF8String
 
 /**
- * A [[Source]] that reads data from Kafka using the following design.
- *
- * - The [[KafkaSourceOffset]] is the custom [[Offset]] defined for this source that contains
- *   a map of TopicPartition -> offset. Note that this offset is 1 + (available offset). For
- *   example if the last record in a Kafka topic "t", partition 2 is offset 5, then
- *   KafkaSourceOffset will contain TopicPartition("t", 2) -> 6. This is done keep it consistent
- *   with the semantics of `KafkaConsumer.position()`.
- *
- * - The [[KafkaSource]] written to do the following.
- *
- *  - As soon as the source is created, the pre-configured [[KafkaOffsetReader]]
- *    is used to query the initial offsets that this source should
- *    start reading from. This is used to create the first batch.
- *
- *   - `getOffset()` uses the [[KafkaOffsetReader]] to query the latest
- *      available offsets, which are returned as a [[KafkaSourceOffset]].
- *
- *   - `getBatch()` returns a DF that reads from the 'start offset' until the 'end offset' in
- *     for each partition. The end offset is excluded to be consistent with the semantics of
- *     [[KafkaSourceOffset]] and `KafkaConsumer.position()`.
- *
- *   - The DF returned is based on [[KafkaSourceRDD]] which is constructed such that the
- *     data from Kafka topic + partition is consistently read by the same executors across
- *     batches, and cached KafkaConsumers in the executors can be reused efficiently. See the
- *     docs on [[KafkaSourceRDD]] for more details.
- *
- * Zero data lost is not guaranteed when topics are deleted. If zero data lost is critical, the user
- * must make sure all messages in a topic have been processed when deleting a topic.
- *
- * There is a known issue caused by KAFKA-1894: the query using KafkaSource maybe cannot be stopped.
- * To avoid this issue, you should make sure stopping the query before stopping the Kafka brokers
- * and not use wrong broker addresses.
- */
+  * A [[Source]] that reads data from Kafka using the following design.
+  *
+  * - The [[KafkaSourceOffset]] is the custom [[Offset]] defined for this source that contains
+  * a map of TopicPartition -> offset. Note that this offset is 1 + (available offset). For
+  * example if the last record in a Kafka topic "t", partition 2 is offset 5, then
+  * KafkaSourceOffset will contain TopicPartition("t", 2) -> 6. This is done keep it consistent
+  * with the semantics of `KafkaConsumer.position()`.
+  *
+  * - The [[KafkaSource]] written to do the following.
+  *
+  *  - As soon as the source is created, the pre-configured [[KafkaOffsetReader]]
+  * is used to query the initial offsets that this source should
+  * start reading from. This is used to create the first batch.
+  *
+  *   - `getOffset()` uses the [[KafkaOffsetReader]] to query the latest
+  * available offsets, which are returned as a [[KafkaSourceOffset]].
+  *
+  *   - `getBatch()` returns a DF that reads from the 'start offset' until the 'end offset' in
+  * for each partition. The end offset is excluded to be consistent with the semantics of
+  * [[KafkaSourceOffset]] and `KafkaConsumer.position()`.
+  *
+  *   - The DF returned is based on [[KafkaSourceRDD]] which is constructed such that the
+  * data from Kafka topic + partition is consistently read by the same executors across
+  * batches, and cached KafkaConsumers in the executors can be reused efficiently. See the
+  * docs on [[KafkaSourceRDD]] for more details.
+  *
+  * Zero data lost is not guaranteed when topics are deleted. If zero data lost is critical, the user
+  * must make sure all messages in a topic have been processed when deleting a topic.
+  *
+  * There is a known issue caused by KAFKA-1894: the query using KafkaSource maybe cannot be stopped.
+  * To avoid this issue, you should make sure stopping the query before stopping the Kafka brokers
+  * and not use wrong broker addresses.
+  */
 private[kafka010] class KafkaSource(
-    sqlContext: SQLContext,
-    kafkaReader: KafkaOffsetReader,
-    executorKafkaParams: ju.Map[String, Object],
-    sourceOptions: Map[String, String],
-    metadataPath: String,
-    startingOffsets: KafkaOffsetRangeLimit,
-    failOnDataLoss: Boolean)
+                                     sqlContext: SQLContext,
+                                     kafkaReader: KafkaOffsetReader,
+                                     override val schema: StructType,
+                                     executorKafkaParams: ju.Map[String, Object],
+                                     sourceOptions: Map[String, String],
+                                     metadataPath: String,
+                                     startingOffsets: KafkaOffsetRangeLimit,
+                                     failOnDataLoss: Boolean)
   extends Source with Logging {
 
   private val sc = sqlContext.sparkContext
@@ -89,11 +87,13 @@ private[kafka010] class KafkaSource(
   private val maxOffsetsPerTrigger =
     sourceOptions.get("maxOffsetsPerTrigger").map(_.toLong)
 
+  private val avroSchema: String = sourceOptions.get("avroSchema").get
+
   /**
-   * Lazily initialize `initialPartitionOffsets` to make sure that `KafkaConsumer.poll` is only
-   * called in StreamExecutionThread. Otherwise, interrupting a thread while running
-   * `KafkaConsumer.poll` may hang forever (KAFKA-1894).
-   */
+    * Lazily initialize `initialPartitionOffsets` to make sure that `KafkaConsumer.poll` is only
+    * called in StreamExecutionThread. Otherwise, interrupting a thread while running
+    * `KafkaConsumer.poll` may hang forever (KAFKA-1894).
+    */
   private lazy val initialPartitionOffsets = {
     val metadataLog =
       new HDFSMetadataLog[KafkaSourceOffset](sqlContext.sparkSession, metadataPath) {
@@ -142,7 +142,7 @@ private[kafka010] class KafkaSource(
     val result = kafkaReader.fetchSpecificOffsets(specificOffsets)
     specificOffsets.foreach {
       case (tp, off) if off != KafkaOffsetRangeLimit.LATEST &&
-          off != KafkaOffsetRangeLimit.EARLIEST =>
+        off != KafkaOffsetRangeLimit.EARLIEST =>
         if (result(tp) != off) {
           reportDataLoss(
             s"startingOffsets for $tp was $off but consumer reset to ${result(tp)}")
@@ -154,8 +154,6 @@ private[kafka010] class KafkaSource(
   }
 
   private var currentPartitionOffsets: Option[Map[TopicPartition, Long]] = None
-
-  override def schema: StructType = KafkaOffsetReader.kafkaSchema
 
   /** Returns the maximum available offset for this source. */
   override def getOffset: Option[Offset] = {
@@ -179,9 +177,9 @@ private[kafka010] class KafkaSource(
 
   /** Proportionally distribute limit number of offsets among topicpartitions */
   private def rateLimit(
-      limit: Long,
-      from: Map[TopicPartition, Long],
-      until: Map[TopicPartition, Long]): Map[TopicPartition, Long] = {
+                         limit: Long,
+                         from: Map[TopicPartition, Long],
+                         until: Map[TopicPartition, Long]): Map[TopicPartition, Long] = {
     val fromNew = kafkaReader.fetchEarliestOffsets(until.keySet.diff(from.keySet).toSeq)
     val sizes = until.flatMap {
       case (tp, end) =>
@@ -213,10 +211,10 @@ private[kafka010] class KafkaSource(
   }
 
   /**
-   * Returns the data that is between the offsets
-   * [`start.get.partitionToOffsets`, `end.partitionToOffsets`), i.e. end.partitionToOffsets is
-   * exclusive.
-   */
+    * Returns the data that is between the offsets
+    * [`start.get.partitionToOffsets`, `end.partitionToOffsets`), i.e. end.partitionToOffsets is
+    * exclusive.
+    */
   override def getBatch(start: Option[Offset], end: Offset): DataFrame = {
     // Make sure initialPartitionOffsets is initialized
     initialPartitionOffsets
@@ -291,16 +289,17 @@ private[kafka010] class KafkaSource(
     // Create an RDD that reads from Kafka and get the (key, value) pair as byte arrays.
     val rdd = new KafkaSourceRDD(
       sc, executorKafkaParams, offsetRanges, pollTimeoutMs, failOnDataLoss,
-      reuseKafkaConsumer = true).map { cr =>
-      InternalRow(
-        cr.key,
-        cr.value,
-        UTF8String.fromString(cr.topic),
-        cr.partition,
-        cr.offset,
-        DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(cr.timestamp)),
-        cr.timestampType.id)
-    }
+      reuseKafkaConsumer = true,avroSchema)
+    //      .map { cr =>
+    //      InternalRow(
+    //        cr.key,
+    //        cr.value,
+    //        UTF8String.fromString(cr.topic),
+    //        cr.partition,
+    //        cr.offset,
+    //        DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(cr.timestamp)),
+    //        cr.timestampType.id)
+    //       }
 
     logInfo("GetBatch generating RDD of offset range: " +
       offsetRanges.sortBy(_.topicPartition.toString).mkString(", "))
@@ -321,9 +320,9 @@ private[kafka010] class KafkaSource(
   override def toString(): String = s"KafkaSource[$kafkaReader]"
 
   /**
-   * If `failOnDataLoss` is true, this method will throw an `IllegalStateException`.
-   * Otherwise, just log a warning.
-   */
+    * If `failOnDataLoss` is true, this method will throw an `IllegalStateException`.
+    * Otherwise, just log a warning.
+    */
   private def reportDataLoss(message: String): Unit = {
     if (failOnDataLoss) {
       throw new IllegalStateException(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE")
@@ -362,7 +361,12 @@ private[kafka010] object KafkaSource {
   }
 
   private def compare(a: ExecutorCacheTaskLocation, b: ExecutorCacheTaskLocation): Boolean = {
-    if (a.host == b.host) { a.executorId > b.executorId } else { a.host > b.host }
+    if (a.host == b.host) {
+      a.executorId > b.executorId
+    } else {
+      a.host > b.host
+    }
   }
 
 }
+

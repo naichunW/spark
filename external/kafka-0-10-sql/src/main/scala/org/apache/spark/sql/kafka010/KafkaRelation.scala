@@ -39,7 +39,8 @@ private[kafka010] class KafkaRelation(
     specifiedKafkaParams: Map[String, String],
     failOnDataLoss: Boolean,
     startingOffsets: KafkaOffsetRangeLimit,
-    endingOffsets: KafkaOffsetRangeLimit)
+    endingOffsets: KafkaOffsetRangeLimit,
+    avroSchema:String)
     extends BaseRelation with TableScan with Logging {
   assert(startingOffsets != LatestOffsetRangeLimit,
     "Starting offset not allowed to be set to latest offsets.")
@@ -50,7 +51,7 @@ private[kafka010] class KafkaRelation(
     "kafkaConsumer.pollTimeoutMs",
     sqlContext.sparkContext.conf.getTimeAsMs("spark.network.timeout", "120s").toString
   ).toLong
-
+ //TODO 返回真正的schema
   override def schema: StructType = KafkaOffsetReader.kafkaSchema
 
   override def buildScan(): RDD[Row] = {
@@ -105,16 +106,17 @@ private[kafka010] class KafkaRelation(
       KafkaSourceProvider.kafkaParamsForExecutors(specifiedKafkaParams, uniqueGroupId)
     val rdd = new KafkaSourceRDD(
       sqlContext.sparkContext, executorKafkaParams, offsetRanges,
-      pollTimeoutMs, failOnDataLoss, reuseKafkaConsumer = false).map { cr =>
-      InternalRow(
-        cr.key,
-        cr.value,
-        UTF8String.fromString(cr.topic),
-        cr.partition,
-        cr.offset,
-        DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(cr.timestamp)),
-        cr.timestampType.id)
-    }
+      pollTimeoutMs, failOnDataLoss, reuseKafkaConsumer = false,avroSchema)
+//      .map { cr =>
+//      InternalRow(
+//        cr.key,
+//        cr.value,
+//        UTF8String.fromString(cr.topic),
+//        cr.partition,
+//        cr.offset,
+//        DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(cr.timestamp)),
+//        cr.timestampType.id)
+//    }
     sqlContext.internalCreateDataFrame(rdd, schema).rdd
   }
 

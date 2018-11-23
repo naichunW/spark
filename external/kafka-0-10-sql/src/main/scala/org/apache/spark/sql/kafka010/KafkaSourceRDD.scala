@@ -19,53 +19,61 @@ package org.apache.spark.sql.kafka010
 
 import java.{util => ju}
 
-import scala.collection.mutable.ArrayBuffer
-
-import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecord}
+import org.apache.avro.Schema
+import org.apache.avro.generic.{GenericData, GenericRecord}
+import org.apache.avro.io.{BinaryDecoder, DecoderFactory}
+import org.apache.avro.specific.SpecificDatumReader
+import org.apache.avro.util.Utf8
 import org.apache.kafka.common.TopicPartition
-
-import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.partial.{BoundedDouble, PartialResult}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.storage.StorageLevel
+import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.NextIterator
+import org.apache.spark.{Partition, SparkContext, TaskContext}
+
+import scala.collection.mutable.ArrayBuffer
 
 
 /** Offset range that one partition of the KafkaSourceRDD has to read */
 private[kafka010] case class KafkaSourceRDDOffsetRange(
-    topicPartition: TopicPartition,
-    fromOffset: Long,
-    untilOffset: Long,
-    preferredLoc: Option[String]) {
+                                                        topicPartition: TopicPartition,
+                                                        fromOffset: Long,
+                                                        untilOffset: Long,
+                                                        preferredLoc: Option[String]) {
   def topic: String = topicPartition.topic
+
   def partition: Int = topicPartition.partition
+
   def size: Long = untilOffset - fromOffset
 }
 
 
 /** Partition of the KafkaSourceRDD */
 private[kafka010] case class KafkaSourceRDDPartition(
-  index: Int, offsetRange: KafkaSourceRDDOffsetRange) extends Partition
+                                                      index: Int, offsetRange: KafkaSourceRDDOffsetRange) extends Partition
 
 
 /**
- * An RDD that reads data from Kafka based on offset ranges across multiple partitions.
- * Additionally, it allows preferred locations to be set for each topic + partition, so that
- * the [[KafkaSource]] can ensure the same executor always reads the same topic + partition
- * and cached KafkaConsuemrs (see [[CachedKafkaConsumer]] can be used read data efficiently.
- *
- * @param sc the [[SparkContext]]
- * @param executorKafkaParams Kafka configuration for creating KafkaConsumer on the executors
- * @param offsetRanges Offset ranges that define the Kafka data belonging to this RDD
- */
+  * An RDD that reads data from Kafka based on offset ranges across multiple partitions.
+  * Additionally, it allows preferred locations to be set for each topic + partition, so that
+  * the [[KafkaSource]] can ensure the same executor always reads the same topic + partition
+  * and cached KafkaConsuemrs (see [[CachedKafkaConsumer]] can be used read data efficiently.
+  *
+  * @param sc                  the [[SparkContext]]
+  * @param executorKafkaParams Kafka configuration for creating KafkaConsumer on the executors
+  * @param offsetRanges        Offset ranges that define the Kafka data belonging to this RDD
+  */
 private[kafka010] class KafkaSourceRDD(
-    sc: SparkContext,
-    executorKafkaParams: ju.Map[String, Object],
-    offsetRanges: Seq[KafkaSourceRDDOffsetRange],
-    pollTimeoutMs: Long,
-    failOnDataLoss: Boolean,
-    reuseKafkaConsumer: Boolean)
-  extends RDD[ConsumerRecord[Array[Byte], Array[Byte]]](sc, Nil) {
+                                        sc: SparkContext,
+                                        executorKafkaParams: ju.Map[String, Object],
+                                        offsetRanges: Seq[KafkaSourceRDDOffsetRange],
+                                        pollTimeoutMs: Long,
+                                        failOnDataLoss: Boolean,
+                                        reuseKafkaConsumer: Boolean,
+                                        avroSchema: String)
+  extends RDD[InternalRow](sc, Nil) {
 
   override def persist(newLevel: StorageLevel): this.type = {
     logError("Kafka ConsumerRecord is not serializable. " +
@@ -86,12 +94,12 @@ private[kafka010] class KafkaSourceRDD(
 
   override def isEmpty(): Boolean = count == 0L
 
-  override def take(num: Int): Array[ConsumerRecord[Array[Byte], Array[Byte]]] = {
+  override def take(num: Int): Array[InternalRow] = {
     val nonEmptyPartitions =
       this.partitions.map(_.asInstanceOf[KafkaSourceRDDPartition]).filter(_.offsetRange.size > 0)
 
     if (num < 1 || nonEmptyPartitions.isEmpty) {
-      return new Array[ConsumerRecord[Array[Byte], Array[Byte]]](0)
+      return new Array[InternalRow](0)
     }
 
     // Determine in advance how many messages need to be taken from each partition
@@ -105,11 +113,11 @@ private[kafka010] class KafkaSourceRDD(
       }
     }
 
-    val buf = new ArrayBuffer[ConsumerRecord[Array[Byte], Array[Byte]]]
+    val buf = new ArrayBuffer[InternalRow]
     val res = context.runJob(
       this,
-      (tc: TaskContext, it: Iterator[ConsumerRecord[Array[Byte], Array[Byte]]]) =>
-      it.take(parts(tc.partitionId)).toArray, parts.keys.toArray
+      (tc: TaskContext, it: Iterator[InternalRow]) =>
+        it.take(parts(tc.partitionId)).toArray, parts.keys.toArray
     )
     res.foreach(buf ++= _)
     buf.toArray
@@ -121,8 +129,8 @@ private[kafka010] class KafkaSourceRDD(
   }
 
   override def compute(
-      thePart: Partition,
-      context: TaskContext): Iterator[ConsumerRecord[Array[Byte], Array[Byte]]] = {
+                        thePart: Partition,
+                        context: TaskContext): Iterator[InternalRow] = {
     val sourcePartition = thePart.asInstanceOf[KafkaSourceRDDPartition]
     val topic = sourcePartition.offsetRange.topic
     val kafkaPartition = sourcePartition.offsetRange.partition
@@ -145,23 +153,77 @@ private[kafka010] class KafkaSourceRDD(
         s"skipping ${range.topic} ${range.partition}")
       Iterator.empty
     } else {
-      val underlying = new NextIterator[ConsumerRecord[Array[Byte], Array[Byte]]]() {
+      val underlying = new NextIterator[InternalRow]() {
         var requestOffset = range.fromOffset
+        val schema = new Schema.Parser().parse(avroSchema)
+        val fields = schema.getFields.size()
+        val reader = new SpecificDatumReader[GenericRecord](schema)
+        val decoderFactory = DecoderFactory.get()
+        var decoder: BinaryDecoder = null
+        val record: GenericData.Record = new GenericData.Record(schema)
+        var rows: Iterator[InternalRow] = Iterator[InternalRow]()
 
-        override def getNext(): ConsumerRecord[Array[Byte], Array[Byte]] = {
-          if (requestOffset >= range.untilOffset) {
+        // 返回一个有数据的迭代器，直至该批次结束则返回true
+        def nextRecord():Iterator[InternalRow]={
+          if(requestOffset >= range.untilOffset){
+            null
+          }else{
+            val r = consumer.get(requestOffset, range.untilOffset, pollTimeoutMs, failOnDataLoss)
+            if (r == null) {
+              // Losing some data. Skip the rest offsets in this partition.
+              null
+            } else {
+              requestOffset = r.offset + 1
+              val bytes: Array[Byte] = r.value
+              if(null != bytes){
+                val datas = new ArrayBuffer[InternalRow]()
+                try {
+                  decoder = decoderFactory.binaryDecoder(bytes, decoder)
+                  while (!decoder.isEnd) {
+                    reader.read(record, decoder)
+                    val rowData = ArrayBuffer[AnyRef]()
+                    for (index <- 0 until fields) {
+                      val value: AnyRef = record.get(index)
+                      if (value.isInstanceOf[Utf8]) {
+                        rowData.append(UTF8String.fromString(value.toString))
+                      } else {
+                        rowData.append(value)
+                      }
+                    }
+                    val row = InternalRow.fromSeq(rowData)
+                    datas.append(row)
+                  }
+                } catch {
+                  case e: Exception => logWarning("kafka message avro decoder error", e)
+                }
+                rows = datas.iterator
+              }
+              //判断是否反序列化有问题，如果有问题，则消费下一条kafka message
+              if(rows.hasNext){
+                rows
+              }else{
+                nextRecord()
+              }
+            }
+          }
+        }
+
+        override def getNext(): InternalRow = {
+          if (!rows.hasNext && requestOffset >= range.untilOffset ) {
             // Processed all offsets in this partition.
             finished = true
             null
           } else {
-            val r = consumer.get(requestOffset, range.untilOffset, pollTimeoutMs, failOnDataLoss)
-            if (r == null) {
-              // Losing some data. Skip the rest offsets in this partition.
-              finished = true
-              null
+            if (rows.hasNext) {
+              val row = rows.next()
+              row
             } else {
-              requestOffset = r.offset + 1
-              r
+              if(null == nextRecord()){
+                finished = true
+                null
+              }else{
+                rows.next()
+              }
             }
           }
         }
