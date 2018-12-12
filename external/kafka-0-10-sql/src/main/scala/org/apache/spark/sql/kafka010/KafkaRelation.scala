@@ -17,19 +17,19 @@
 
 package org.apache.spark.sql.kafka010
 
-import java.{util => ju}
 import java.util.UUID
 
+import org.apache.avro.Schema
 import org.apache.kafka.common.TopicPartition
-
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{Row, SQLContext}
-import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.sources.{BaseRelation, TableScan}
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.unsafe.types.UTF8String
+import org.apache.spark.sql.{Row, SQLContext}
+
+import scala.collection.JavaConversions._
+import scala.collection.mutable.ListBuffer
+
 
 
 private[kafka010] class KafkaRelation(
@@ -39,8 +39,7 @@ private[kafka010] class KafkaRelation(
     specifiedKafkaParams: Map[String, String],
     failOnDataLoss: Boolean,
     startingOffsets: KafkaOffsetRangeLimit,
-    endingOffsets: KafkaOffsetRangeLimit,
-    avroSchema:String)
+    endingOffsets: KafkaOffsetRangeLimit)
     extends BaseRelation with TableScan with Logging {
   assert(startingOffsets != LatestOffsetRangeLimit,
     "Starting offset not allowed to be set to latest offsets.")
@@ -51,8 +50,21 @@ private[kafka010] class KafkaRelation(
     "kafkaConsumer.pollTimeoutMs",
     sqlContext.sparkContext.conf.getTimeAsMs("spark.network.timeout", "120s").toString
   ).toLong
- //TODO 返回真正的schema
-  override def schema: StructType = KafkaOffsetReader.kafkaSchema
+
+  private val avroSchema: String = sourceOptions.get(KafkaSourceProvider.AVRO_SCHEMA).get
+
+  /** Returns the schema of the data from this source */
+  override def schema: StructType = {
+    val schema = new Schema.Parser().parse(avroSchema)
+    SchemaConverters.toSqlType(schema).dataType match {
+      case t: StructType => t
+      case _ => throw new RuntimeException(
+        s"""Avro schema cannot be converted to a Spark SQL StructType:
+           |
+           |${schema.toString(true)}
+           |""".stripMargin)
+    }
+  }
 
   override def buildScan(): RDD[Row] = {
     // Each running query should use its own group id. Otherwise, the query may be only assigned
@@ -106,7 +118,7 @@ private[kafka010] class KafkaRelation(
       KafkaSourceProvider.kafkaParamsForExecutors(specifiedKafkaParams, uniqueGroupId)
     val rdd = new KafkaSourceRDD(
       sqlContext.sparkContext, executorKafkaParams, offsetRanges,
-      pollTimeoutMs, failOnDataLoss, reuseKafkaConsumer = false,avroSchema)
+      pollTimeoutMs, failOnDataLoss, reuseKafkaConsumer = false,avroSchema,schema)
 //      .map { cr =>
 //      InternalRow(
 //        cr.key,
@@ -148,4 +160,5 @@ private[kafka010] class KafkaRelation(
 
   override def toString: String =
     s"KafkaRelation(strategy=$strategy, start=$startingOffsets, end=$endingOffsets)"
+
 }

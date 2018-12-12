@@ -22,6 +22,7 @@ import java.io._
 import java.nio.charset.StandardCharsets
 import java.{util => ju}
 
+import org.apache.avro.Schema
 import org.apache.commons.io.IOUtils
 import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkContext
@@ -31,6 +32,9 @@ import org.apache.spark.sql._
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.kafka010.KafkaSource._
 import org.apache.spark.sql.types._
+import scala.collection.JavaConversions._
+
+import scala.collection.mutable.ListBuffer
 
 /**
   * A [[Source]] that reads data from Kafka using the following design.
@@ -69,7 +73,6 @@ import org.apache.spark.sql.types._
 private[kafka010] class KafkaSource(
                                      sqlContext: SQLContext,
                                      kafkaReader: KafkaOffsetReader,
-                                     override val schema: StructType,
                                      executorKafkaParams: ju.Map[String, Object],
                                      sourceOptions: Map[String, String],
                                      metadataPath: String,
@@ -87,7 +90,20 @@ private[kafka010] class KafkaSource(
   private val maxOffsetsPerTrigger =
     sourceOptions.get("maxOffsetsPerTrigger").map(_.toLong)
 
-  private val avroSchema: String = sourceOptions.get("avroSchema").get
+  private val avroSchema: String = sourceOptions.get(KafkaSourceProvider.AVRO_SCHEMA).get
+
+  /** Returns the schema of the data from this source */
+  override def schema: StructType = {
+    val schema = new Schema.Parser().parse(avroSchema)
+    SchemaConverters.toSqlType(schema).dataType match {
+      case t: StructType => t
+      case _ => throw new RuntimeException(
+        s"""Avro schema cannot be converted to a Spark SQL StructType:
+           |
+           |${schema.toString(true)}
+           |""".stripMargin)
+    }
+  }
 
   /**
     * Lazily initialize `initialPartitionOffsets` to make sure that `KafkaConsumer.poll` is only
@@ -289,7 +305,7 @@ private[kafka010] class KafkaSource(
     // Create an RDD that reads from Kafka and get the (key, value) pair as byte arrays.
     val rdd = new KafkaSourceRDD(
       sc, executorKafkaParams, offsetRanges, pollTimeoutMs, failOnDataLoss,
-      reuseKafkaConsumer = true,avroSchema)
+      reuseKafkaConsumer = true,avroSchema,schema)
     //      .map { cr =>
     //      InternalRow(
     //        cr.key,
@@ -330,6 +346,8 @@ private[kafka010] class KafkaSource(
       logWarning(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE")
     }
   }
+
+
 }
 
 /** Companion object for the [[KafkaSource]]. */

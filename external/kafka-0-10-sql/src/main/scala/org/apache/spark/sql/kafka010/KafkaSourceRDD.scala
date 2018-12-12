@@ -17,19 +17,21 @@
 
 package org.apache.spark.sql.kafka010
 
+
 import java.{util => ju}
 
 import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericData, GenericRecord}
 import org.apache.avro.io.{BinaryDecoder, DecoderFactory}
 import org.apache.avro.specific.SpecificDatumReader
-import org.apache.avro.util.Utf8
 import org.apache.kafka.common.TopicPartition
 import org.apache.spark.partial.{BoundedDouble, PartialResult}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.encoders.RowEncoder
+import org.apache.spark.sql.catalyst.expressions.GenericRow
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.storage.StorageLevel
-import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.NextIterator
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 
@@ -65,6 +67,7 @@ private[kafka010] case class KafkaSourceRDDPartition(
   * @param executorKafkaParams Kafka configuration for creating KafkaConsumer on the executors
   * @param offsetRanges        Offset ranges that define the Kafka data belonging to this RDD
   */
+//TODO 检查所有方法合理性
 private[kafka010] class KafkaSourceRDD(
                                         sc: SparkContext,
                                         executorKafkaParams: ju.Map[String, Object],
@@ -72,12 +75,13 @@ private[kafka010] class KafkaSourceRDD(
                                         pollTimeoutMs: Long,
                                         failOnDataLoss: Boolean,
                                         reuseKafkaConsumer: Boolean,
-                                        avroSchema: String)
+                                        avroSchema: String,
+                                        sqlType: StructType)
   extends RDD[InternalRow](sc, Nil) {
 
   override def persist(newLevel: StorageLevel): this.type = {
-    logError("Kafka ConsumerRecord is not serializable. " +
-      "Use .map to extract fields before calling .persist or .window")
+//    logError("Kafka ConsumerRecord is not serializable. " +
+//      "Use .map to extract fields before calling .persist or .window")
     super.persist(newLevel)
   }
 
@@ -85,6 +89,7 @@ private[kafka010] class KafkaSourceRDD(
     offsetRanges.zipWithIndex.map { case (o, i) => new KafkaSourceRDDPartition(i, o) }.toArray
   }
 
+  //TODO kafka条数，是否改为实际记录条数
   override def count(): Long = offsetRanges.map(_.size).sum
 
   override def countApprox(timeout: Long, confidence: Double): PartialResult[BoundedDouble] = {
@@ -153,25 +158,27 @@ private[kafka010] class KafkaSourceRDD(
         s"skipping ${range.topic} ${range.partition}")
       Iterator.empty
     } else {
+
       val underlying = new NextIterator[InternalRow]() {
         var requestOffset = range.fromOffset
         val schema = new Schema.Parser().parse(avroSchema)
-        val fields = schema.getFields.size()
+        val rowConverter = SchemaConverters.createConverterToSQL(schema, sqlType)
+        private val encoderForDataColumns = RowEncoder(sqlType)
         val reader = new SpecificDatumReader[GenericRecord](schema)
         val decoderFactory = DecoderFactory.get()
         var decoder: BinaryDecoder = null
-        val record: GenericData.Record = new GenericData.Record(schema)
+        val record: GenericRecord = new GenericData.Record(schema)
         var rows: Iterator[InternalRow] = Iterator[InternalRow]()
 
-        // 返回一个有数据的迭代器，直至该批次结束则返回true
-        def nextRecord():Iterator[InternalRow]={
+        // 更新数据迭代器，直至该批次结束则返回true
+        def nextRecord():Boolean={
           if(requestOffset >= range.untilOffset){
-            null
+            true
           }else{
             val r = consumer.get(requestOffset, range.untilOffset, pollTimeoutMs, failOnDataLoss)
             if (r == null) {
               // Losing some data. Skip the rest offsets in this partition.
-              null
+              true
             } else {
               requestOffset = r.offset + 1
               val bytes: Array[Byte] = r.value
@@ -181,16 +188,9 @@ private[kafka010] class KafkaSourceRDD(
                   decoder = decoderFactory.binaryDecoder(bytes, decoder)
                   while (!decoder.isEnd) {
                     reader.read(record, decoder)
-                    val rowData = ArrayBuffer[AnyRef]()
-                    for (index <- 0 until fields) {
-                      val value: AnyRef = record.get(index)
-                      if (value.isInstanceOf[Utf8]) {
-                        rowData.append(UTF8String.fromString(value.toString))
-                      } else {
-                        rowData.append(value)
-                      }
-                    }
-                    val row = InternalRow.fromSeq(rowData)
+                    val safeDataRow = rowConverter(record).asInstanceOf[GenericRow]
+                    // The safeDataRow is reused, we must do a copy
+                    val row = encoderForDataColumns.toRow(safeDataRow)
                     datas.append(row)
                   }
                 } catch {
@@ -198,12 +198,7 @@ private[kafka010] class KafkaSourceRDD(
                 }
                 rows = datas.iterator
               }
-              //判断是否反序列化有问题，如果有问题，则消费下一条kafka message
-              if(rows.hasNext){
-                rows
-              }else{
-                nextRecord()
-              }
+              false
             }
           }
         }
@@ -218,8 +213,11 @@ private[kafka010] class KafkaSourceRDD(
               val row = rows.next()
               row
             } else {
-              if(null == nextRecord()){
-                finished = true
+              //当该批次没有结束，且由于数据反序列化失败导致rows为空=>循环
+              while(rows.isEmpty && !finished){
+                finished = nextRecord()
+              }
+              if(finished){
                 null
               }else{
                 rows.next()
