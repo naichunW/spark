@@ -160,7 +160,7 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
     val specifiedKafkaParams = kafkaParamsForProducer(parameters)
     val topic = parameters.get(TOPIC_OPTION_KEY).map(_.trim)
     val recordNamespace = parameters.getOrElse("recordNamespace", "")
-    val schemaRegistry = parameters.get(SCHEMA_REGISTRY).map(_.trim)
+    val schemaRegistry = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }.get(SCHEMA_REGISTRY).map(_.trim)
     new KafkaSink(sqlContext,
       new ju.HashMap[String, Object](specifiedKafkaParams.asJava), topic, recordNamespace, schemaRegistry)
   }
@@ -179,7 +179,7 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
     }
     val topic = parameters.get(TOPIC_OPTION_KEY).map(_.trim)
     val recordNamespace = parameters.getOrElse("recordNamespace", "")
-    val schemaRegistry = parameters.get(SCHEMA_REGISTRY).map(_.trim)
+    val schemaRegistry = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }.get(SCHEMA_REGISTRY).map(_.trim)
     val specifiedKafkaParams = kafkaParamsForProducer(parameters)
     KafkaWriter.write(outerSQLContext.sparkSession, data.queryExecution,
       new ju.HashMap[String, Object](specifiedKafkaParams.asJava), topic, recordNamespace, schemaRegistry)
@@ -209,10 +209,10 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
     if (!parameters.contains(TOPIC_OPTION_KEY)) {
       throw new IllegalArgumentException(s"Option '$TOPIC_OPTION_KEY' must be specified for configuring Kafka_Avro Sink")
     }
-    if (!parameters.contains(SCHEMA_REGISTRY)) {
+    val caseInsensitiveParams = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }
+    if (!caseInsensitiveParams.contains(SCHEMA_REGISTRY)) {
       logWarning(s"Option '$SCHEMA_REGISTRY' cat be specified for auto register Kafka_Avro Sink schema")
     }
-    val caseInsensitiveParams = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }
     if (caseInsensitiveParams.contains(s"kafka.${ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG}")) {
       throw new IllegalArgumentException(
         s"Kafka option '${ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG}' is not supported as keys "
@@ -346,11 +346,10 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
           s"configuring Kafka consumer")
     }
 
-    if (!parameters.contains(AVRO_SCHEMA)) {
+    if (!caseInsensitiveParams.contains(AVRO_SCHEMA)) {
       throw new IllegalArgumentException(s"Option '$AVRO_SCHEMA' must be specified for configuring Kafka_Avro Source")
     }
-    val avroSchema = parameters.getOrElse(AVRO_SCHEMA, "null")
-
+    val avroSchema = caseInsensitiveParams.getOrElse(AVRO_SCHEMA, "null")
     try {
       new Schema.Parser().parse(avroSchema)
     } catch {
@@ -413,7 +412,7 @@ private[kafka010] object KafkaSourceProvider extends Logging {
   private val FAIL_ON_DATA_LOSS_OPTION_KEY = "failondataloss"
   val AVRO_SCHEMA = "avroschema"
   val TOPIC_OPTION_KEY = "topic"
-  val SCHEMA_REGISTRY = "schemaRegistry"
+  val SCHEMA_REGISTRY = "schemaregistry"
 
   private val deserClassName = classOf[ByteArrayDeserializer].getName
 
