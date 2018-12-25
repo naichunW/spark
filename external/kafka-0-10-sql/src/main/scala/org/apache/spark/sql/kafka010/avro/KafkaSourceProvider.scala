@@ -15,25 +15,23 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
-import java.{util => ju}
 import java.util.{Locale, UUID}
+import java.{util => ju}
 
 import org.apache.avro.{Schema, SchemaParseException}
-
-import scala.collection.JavaConverters._
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer}
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.{AnalysisException, DataFrame, SQLContext, SaveMode}
 import org.apache.spark.sql.execution.streaming.{Sink, Source}
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.streaming.OutputMode
 import org.apache.spark.sql.types.StructType
-import scala.collection.JavaConversions._
-import scala.collection.mutable.ListBuffer
+import org.apache.spark.sql.{AnalysisException, DataFrame, SQLContext, SaveMode}
+
+import scala.collection.JavaConverters._
 
 /**
   * The provider class for the [[KafkaSource]]. This provider is designed such that it throws
@@ -61,20 +59,21 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
                              schema: Option[StructType],
                              providerName: String,
                              parameters: Map[String, String]): (String, StructType) = {
-    require(schema.isEmpty, "Kafka_Avro source create scheam with avroScheam and cannot be set with a custom one")
+    require(schema.isEmpty, "Kafka_Avro source create scheam with avroSchema and cannot be set with a custom one")
 
     val caseInsensitiveParams = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }
     validateStreamOptions(caseInsensitiveParams)
-    val avroSchema: String = parameters.get("avroschema").get
+    val avroSchema: String = caseInsensitiveParams.get(AVRO_SCHEMA).get
     /** Returns the schema of the data from this source */
-    val avro_schema = new Schema.Parser().parse(avroSchema)
-    val name_type = ListBuffer[String]()
-    avro_schema.getFields.toSeq.foreach(field => {
-      val name = field.name()
-      val stype = AvroDeserialize.convert(field.schema())
-      name_type += s"$name $stype"
-    })
-    (shortName(), StructType.fromDDL(name_type.mkString(",")))
+    val schemaAvro = new Schema.Parser().parse(avroSchema)
+    SchemaConverters.toSqlType(schemaAvro).dataType match {
+      case t: StructType => (shortName(), t)
+      case _ => throw new RuntimeException(
+        s"""Avro schema cannot be converted to a Spark SQL StructType:
+           |
+           |${schemaAvro.toString(true)}
+           |""".stripMargin)
+    }
   }
 
   override def createSource(
@@ -85,7 +84,7 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
                              parameters: Map[String, String]): Source = {
     require(schema.isEmpty, "Kafka_Avro source create scheam with avroScheam and cannot be set with a custom one")
     val caseInsensitiveParams = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }
-    validateStreamOptions(parameters)
+    validateStreamOptions(caseInsensitiveParams)
     // Each running query should use its own group id. Otherwise, the query may be only assigned
     // partial data since Kafka will assign partitions to multiple consumers having the same group
     // id. Hence, we should generate a unique id for each query.
@@ -158,10 +157,12 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
                            parameters: Map[String, String],
                            partitionColumns: Seq[String],
                            outputMode: OutputMode): Sink = {
-    val defaultTopic = parameters.get(TOPIC_OPTION_KEY).map(_.trim)
     val specifiedKafkaParams = kafkaParamsForProducer(parameters)
+    val topic = parameters.get(TOPIC_OPTION_KEY).map(_.trim)
+    val recordNamespace = parameters.getOrElse("recordNamespace", "")
+    val schemaRegistry = parameters.get(SCHEMA_REGISTRY).map(_.trim)
     new KafkaSink(sqlContext,
-      new ju.HashMap[String, Object](specifiedKafkaParams.asJava), defaultTopic)
+      new ju.HashMap[String, Object](specifiedKafkaParams.asJava), topic, recordNamespace, schemaRegistry)
   }
 
   override def createRelation(
@@ -177,9 +178,11 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
       case _ => // good
     }
     val topic = parameters.get(TOPIC_OPTION_KEY).map(_.trim)
+    val recordNamespace = parameters.getOrElse("recordNamespace", "")
+    val schemaRegistry = parameters.get(SCHEMA_REGISTRY).map(_.trim)
     val specifiedKafkaParams = kafkaParamsForProducer(parameters)
     KafkaWriter.write(outerSQLContext.sparkSession, data.queryExecution,
-      new ju.HashMap[String, Object](specifiedKafkaParams.asJava), topic)
+      new ju.HashMap[String, Object](specifiedKafkaParams.asJava), topic, recordNamespace, schemaRegistry)
 
     /* This method is suppose to return a relation that reads the data that was written.
      * We cannot support this for Kafka. Therefore, in order to make things consistent,
@@ -203,6 +206,12 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
   }
 
   private def kafkaParamsForProducer(parameters: Map[String, String]): Map[String, String] = {
+    if (!parameters.contains(TOPIC_OPTION_KEY)) {
+      throw new IllegalArgumentException(s"Option '$TOPIC_OPTION_KEY' must be specified for configuring Kafka_Avro Sink")
+    }
+    if (!parameters.contains(SCHEMA_REGISTRY)) {
+      logWarning(s"Option '$SCHEMA_REGISTRY' cat be specified for auto register Kafka_Avro Sink schema")
+    }
     val caseInsensitiveParams = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }
     if (caseInsensitiveParams.contains(s"kafka.${ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG}")) {
       throw new IllegalArgumentException(
@@ -340,7 +349,7 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
     if (!parameters.contains(AVRO_SCHEMA)) {
       throw new IllegalArgumentException(s"Option '$AVRO_SCHEMA' must be specified for configuring Kafka_Avro Source")
     }
-    val avroSchema = parameters.getOrElse(AVRO_SCHEMA,"null")
+    val avroSchema = parameters.getOrElse(AVRO_SCHEMA, "null")
 
     try {
       new Schema.Parser().parse(avroSchema)
@@ -402,8 +411,9 @@ private[kafka010] object KafkaSourceProvider extends Logging {
   private[kafka010] val STARTING_OFFSETS_OPTION_KEY = "startingoffsets"
   private[kafka010] val ENDING_OFFSETS_OPTION_KEY = "endingoffsets"
   private val FAIL_ON_DATA_LOSS_OPTION_KEY = "failondataloss"
-  val AVRO_SCHEMA = "avroSchema"
+  val AVRO_SCHEMA = "avroschema"
   val TOPIC_OPTION_KEY = "topic"
+  val SCHEMA_REGISTRY = "schemaRegistry"
 
   private val deserClassName = classOf[ByteArrayDeserializer].getName
 

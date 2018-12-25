@@ -15,16 +15,15 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
-import java.{util => ju}
 import java.util.concurrent.ConcurrentMap
+import java.{util => ju}
 
 import org.apache.kafka.clients.producer.KafkaProducer
 import org.apache.kafka.common.serialization.ByteArraySerializer
-import org.scalatest.PrivateMethodTester
-
 import org.apache.spark.sql.test.SharedSQLContext
+import org.scalatest.PrivateMethodTester
 
 class CachedKafkaProducerSuite extends SharedSQLContext with PrivateMethodTester {
 

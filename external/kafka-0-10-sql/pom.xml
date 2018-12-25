@@ -26,12 +26,12 @@
   </parent>
 
   <groupId>org.apache.spark</groupId>
-  <artifactId>spark-sql-kafka-0-10_2.11</artifactId>
+  <artifactId>spark-sql-kafka_avro-0-10_2.11</artifactId>
   <properties>
     <sbt.project.name>sql-kafka-0-10</sbt.project.name>
   </properties>
   <packaging>jar</packaging>
-  <name>Kafka 0.10 Source for Structured Streaming</name>
+  <name>Kafka 0.10 Avro Source for Structured Streaming</name>
   <url>http://spark.apache.org/</url>
 
   <dependencies>
@@ -106,9 +106,21 @@
       <scope>test</scope>
     </dependency>
 
+    <dependency>
+      <groupId>io.confluent</groupId>
+      <artifactId>kafka-schema-registry-client</artifactId>
+      <version>3.0.0</version>
+    </dependency>
+
   </dependencies>
   <build>
     <outputDirectory>target/scala-${scala.binary.version}/classes</outputDirectory>
     <testOutputDirectory>target/scala-${scala.binary.version}/test-classes</testOutputDirectory>
   </build>
+  <repositories>
+    <repository>
+      <id>confluent</id>
+      <url>http://packages.confluent.io/maven/</url>
+    </repository>
+  </repositories>
 </project>

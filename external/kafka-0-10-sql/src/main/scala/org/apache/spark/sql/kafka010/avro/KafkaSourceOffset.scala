@@ -15,16 +15,15 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
 import org.apache.kafka.common.TopicPartition
-
 import org.apache.spark.sql.execution.streaming.{Offset, SerializedOffset}
 
 /**
- * An [[Offset]] for the [[KafkaSource]]. This one tracks all partitions of subscribed topics and
- * their offsets.
- */
+  * An [[Offset]] for the [[KafkaSource]]. This one tracks all partitions of subscribed topics and
+  * their offsets.
+  */
 private[kafka010]
 case class KafkaSourceOffset(partitionToOffsets: Map[TopicPartition, Long]) extends Offset {
 
@@ -45,16 +44,16 @@ private[kafka010] object KafkaSourceOffset {
   }
 
   /**
-   * Returns [[KafkaSourceOffset]] from a variable sequence of (topic, partitionId, offset)
-   * tuples.
-   */
+    * Returns [[KafkaSourceOffset]] from a variable sequence of (topic, partitionId, offset)
+    * tuples.
+    */
   def apply(offsetTuples: (String, Int, Long)*): KafkaSourceOffset = {
-    KafkaSourceOffset(offsetTuples.map { case(t, p, o) => (new TopicPartition(t, p), o) }.toMap)
+    KafkaSourceOffset(offsetTuples.map { case (t, p, o) => (new TopicPartition(t, p), o) }.toMap)
   }
 
   /**
-   * Returns [[KafkaSourceOffset]] from a JSON [[SerializedOffset]]
-   */
+    * Returns [[KafkaSourceOffset]] from a JSON [[SerializedOffset]]
+    */
   def apply(offset: SerializedOffset): KafkaSourceOffset =
     KafkaSourceOffset(JsonUtils.partitionOffsets(offset.json))
 }

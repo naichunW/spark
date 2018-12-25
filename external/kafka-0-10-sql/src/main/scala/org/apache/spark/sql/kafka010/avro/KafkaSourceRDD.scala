@@ -15,8 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
-
+package org.apache.spark.sql.kafka010.avro
 
 import java.{util => ju}
 
@@ -79,54 +78,54 @@ private[kafka010] class KafkaSourceRDD(
                                         sqlType: StructType)
   extends RDD[InternalRow](sc, Nil) {
 
-  override def persist(newLevel: StorageLevel): this.type = {
-//    logError("Kafka ConsumerRecord is not serializable. " +
-//      "Use .map to extract fields before calling .persist or .window")
-    super.persist(newLevel)
-  }
+//  override def persist(newLevel: StorageLevel): this.type = {
+//    //    logError("Kafka ConsumerRecord is not serializable. " +
+//    //      "Use .map to extract fields before calling .persist or .window")
+//    super.persist(newLevel)
+//  }
 
   override def getPartitions: Array[Partition] = {
     offsetRanges.zipWithIndex.map { case (o, i) => new KafkaSourceRDDPartition(i, o) }.toArray
   }
 
   //TODO kafka条数，是否改为实际记录条数
-  override def count(): Long = offsetRanges.map(_.size).sum
+//  override def count(): Long = offsetRanges.map(_.size).sum
+//
+//  override def countApprox(timeout: Long, confidence: Double): PartialResult[BoundedDouble] = {
+//    val c = count
+//    new PartialResult(new BoundedDouble(c, 1.0, c, c), true)
+//  }
 
-  override def countApprox(timeout: Long, confidence: Double): PartialResult[BoundedDouble] = {
-    val c = count
-    new PartialResult(new BoundedDouble(c, 1.0, c, c), true)
-  }
+  override def isEmpty(): Boolean = offsetRanges.map(_.size).sum == 0L
 
-  override def isEmpty(): Boolean = count == 0L
-
-  override def take(num: Int): Array[InternalRow] = {
-    val nonEmptyPartitions =
-      this.partitions.map(_.asInstanceOf[KafkaSourceRDDPartition]).filter(_.offsetRange.size > 0)
-
-    if (num < 1 || nonEmptyPartitions.isEmpty) {
-      return new Array[InternalRow](0)
-    }
-
-    // Determine in advance how many messages need to be taken from each partition
-    val parts = nonEmptyPartitions.foldLeft(Map[Int, Int]()) { (result, part) =>
-      val remain = num - result.values.sum
-      if (remain > 0) {
-        val taken = Math.min(remain, part.offsetRange.size)
-        result + (part.index -> taken.toInt)
-      } else {
-        result
-      }
-    }
-
-    val buf = new ArrayBuffer[InternalRow]
-    val res = context.runJob(
-      this,
-      (tc: TaskContext, it: Iterator[InternalRow]) =>
-        it.take(parts(tc.partitionId)).toArray, parts.keys.toArray
-    )
-    res.foreach(buf ++= _)
-    buf.toArray
-  }
+//  override def take(num: Int): Array[InternalRow] = {
+//    val nonEmptyPartitions =
+//      this.partitions.map(_.asInstanceOf[KafkaSourceRDDPartition]).filter(_.offsetRange.size > 0)
+//
+//    if (num < 1 || nonEmptyPartitions.isEmpty) {
+//      return new Array[InternalRow](0)
+//    }
+//
+//    // Determine in advance how many messages need to be taken from each partition
+//    val parts = nonEmptyPartitions.foldLeft(Map[Int, Int]()) { (result, part) =>
+//      val remain = num - result.values.sum
+//      if (remain > 0) {
+//        val taken = Math.min(remain, part.offsetRange.size)
+//        result + (part.index -> taken.toInt)
+//      } else {
+//        result
+//      }
+//    }
+//
+//    val buf = new ArrayBuffer[InternalRow]
+//    val res = context.runJob(
+//      this,
+//      (tc: TaskContext, it: Iterator[InternalRow]) =>
+//        it.take(parts(tc.partitionId)).toArray, parts.keys.toArray
+//    )
+//    res.foreach(buf ++= _)
+//    buf.toArray
+//  }
 
   override def getPreferredLocations(split: Partition): Seq[String] = {
     val part = split.asInstanceOf[KafkaSourceRDDPartition]
@@ -171,10 +170,10 @@ private[kafka010] class KafkaSourceRDD(
         var rows: Iterator[InternalRow] = Iterator[InternalRow]()
 
         // 更新数据迭代器，直至该批次结束则返回true
-        def nextRecord():Boolean={
-          if(requestOffset >= range.untilOffset){
+        def nextRecord(): Boolean = {
+          if (requestOffset >= range.untilOffset) {
             true
-          }else{
+          } else {
             val r = consumer.get(requestOffset, range.untilOffset, pollTimeoutMs, failOnDataLoss)
             if (r == null) {
               // Losing some data. Skip the rest offsets in this partition.
@@ -182,7 +181,7 @@ private[kafka010] class KafkaSourceRDD(
             } else {
               requestOffset = r.offset + 1
               val bytes: Array[Byte] = r.value
-              if(null != bytes){
+              if (null != bytes) {
                 val datas = new ArrayBuffer[InternalRow]()
                 try {
                   decoder = decoderFactory.binaryDecoder(bytes, decoder)
@@ -194,7 +193,7 @@ private[kafka010] class KafkaSourceRDD(
                     datas.append(row)
                   }
                 } catch {
-                  case e: Exception => logWarning("kafka message avro decoder error", e)
+                  case e: Exception => logWarning("kafka message avro decode error", e)
                 }
                 rows = datas.iterator
               }
@@ -204,7 +203,7 @@ private[kafka010] class KafkaSourceRDD(
         }
 
         override def getNext(): InternalRow = {
-          if (!rows.hasNext && requestOffset >= range.untilOffset ) {
+          if (!rows.hasNext && requestOffset >= range.untilOffset) {
             // Processed all offsets in this partition.
             finished = true
             null
@@ -214,12 +213,12 @@ private[kafka010] class KafkaSourceRDD(
               row
             } else {
               //当该批次没有结束，且由于数据反序列化失败导致rows为空=>循环
-              while(rows.isEmpty && !finished){
+              while (rows.isEmpty && !finished) {
                 finished = nextRecord()
               }
-              if(finished){
+              if (finished) {
                 null
-              }else{
+              } else {
                 rows.next()
               }
             }

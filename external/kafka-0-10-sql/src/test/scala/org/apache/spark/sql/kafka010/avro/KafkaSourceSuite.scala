@@ -15,33 +15,32 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
 import java.io._
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Paths}
-import java.util.{Locale, Properties}
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.{Locale, Properties}
+import org.apache.spark.sql.kafka010.avro.KafkaSourceProvider._
 
-import scala.collection.mutable
-import scala.util.Random
 
 import org.apache.kafka.clients.producer.RecordMetadata
 import org.apache.kafka.common.TopicPartition
-import org.scalatest.concurrent.Eventually._
-import org.scalatest.concurrent.PatienceConfiguration.Timeout
-import org.scalatest.time.SpanSugar._
-
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.ForeachWriter
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.functions.{count, window}
-import org.apache.spark.sql.kafka010.KafkaSourceProvider._
-import org.apache.spark.sql.streaming.{ProcessingTime, StreamTest}
 import org.apache.spark.sql.streaming.util.StreamManualClock
+import org.apache.spark.sql.streaming.{ProcessingTime, StreamTest}
 import org.apache.spark.sql.test.{SharedSQLContext, TestSparkSession}
 import org.apache.spark.util.Utils
+import org.scalatest.concurrent.PatienceConfiguration.Timeout
+import org.scalatest.time.SpanSugar._
+
+import scala.collection.mutable
+import scala.util.Random
 
 abstract class KafkaSourceTest extends StreamTest with SharedSQLContext {
 
@@ -72,15 +71,15 @@ abstract class KafkaSourceTest extends StreamTest with SharedSQLContext {
   }
 
   /**
-   * Add data to Kafka.
-   *
-   * `topicAction` can be used to run actions for each topic before inserting data.
-   */
+    * Add data to Kafka.
+    *
+    * `topicAction` can be used to run actions for each topic before inserting data.
+    */
   case class AddKafkaData(topics: Set[String], data: Int*)
-    (implicit ensureDataInMultiplePartition: Boolean = false,
-      concurrent: Boolean = false,
-      message: String = "",
-      topicAction: (String, Option[Int]) => Unit = (_, _) => {}) extends AddData {
+                         (implicit ensureDataInMultiplePartition: Boolean = false,
+                          concurrent: Boolean = false,
+                          message: String = "",
+                          topicAction: (String, Option[Int]) => Unit = (_, _) => {}) extends AddData {
 
     override def addData(query: Option[StreamExecution]): (Source, Offset) = {
       if (query.get.isActive) {
@@ -117,7 +116,9 @@ abstract class KafkaSourceTest extends StreamTest with SharedSQLContext {
       }
       val kafkaSource = sources.head
       val topic = topics.toSeq(Random.nextInt(topics.size))
-      val sentMetadata = testUtils.sendMessages(topic, data.map { _.toString }.toArray)
+      val sentMetadata = testUtils.sendMessages(topic, data.map {
+        _.toString
+      }.toArray)
 
       def metadataToStr(m: (String, RecordMetadata)): String = {
         s"Sent ${m._1} to partition ${m._2.partition()}, offset ${m._2.offset()}"
@@ -137,6 +138,7 @@ abstract class KafkaSourceTest extends StreamTest with SharedSQLContext {
     override def toString: String =
       s"AddKafkaData(topics = $topics, data = $data, message = $message)"
   }
+
 }
 
 
@@ -321,7 +323,9 @@ class KafkaSourceSuite extends KafkaSourceTest {
   test("cannot stop Kafka stream") {
     val topic = newTopic()
     testUtils.createTopic(topic, partitions = 5)
-    testUtils.sendMessages(topic, (101 to 105).map { _.toString }.toArray)
+    testUtils.sendMessages(topic, (101 to 105).map {
+      _.toString
+    }.toArray)
 
     val reader = spark
       .readStream
@@ -477,7 +481,7 @@ class KafkaSourceSuite extends KafkaSourceTest {
     testStream(mapped)(
       makeSureGetOffsetCalled,
       AddKafkaData(Set(topic), 1, 2, 3),
-      CheckAnswer(1, 2, 3)  // should not have 0
+      CheckAnswer(1, 2, 3) // should not have 0
     )
   }
 
@@ -615,7 +619,8 @@ class KafkaSourceSuite extends KafkaSourceTest {
     for ((optionKey, optionValue, answer) <- Seq(
       (STARTING_OFFSETS_OPTION_KEY, "earLiEst", EarliestOffsetRangeLimit),
       (ENDING_OFFSETS_OPTION_KEY, "laTest", LatestOffsetRangeLimit),
-      (STARTING_OFFSETS_OPTION_KEY, """{"topic-A":{"0":23}}""",
+      (STARTING_OFFSETS_OPTION_KEY,
+        """{"topic-A":{"0":23}}""",
         SpecificOffsetRangeLimit(Map(new TopicPartition("topic-A", 0) -> 23))))) {
       val offset = getKafkaOffsetRangeLimit(Map(optionKey -> optionValue), optionKey, answer)
       assert(offset === answer)
@@ -636,9 +641,9 @@ class KafkaSourceSuite extends KafkaSourceTest {
   }
 
   private def testFromSpecificOffsets(
-      topic: String,
-      failOnDataLoss: Boolean,
-      options: (String, String)*): Unit = {
+                                       topic: String,
+                                       failOnDataLoss: Boolean,
+                                       options: (String, String)*): Unit = {
     val partitionOffsets = Map(
       new TopicPartition(topic, 0) -> -2L,
       new TopicPartition(topic, 1) -> -1L,
@@ -765,10 +770,10 @@ class KafkaSourceSuite extends KafkaSourceTest {
   }
 
   private def testFromLatestOffsets(
-      topic: String,
-      addPartitions: Boolean,
-      failOnDataLoss: Boolean,
-      options: (String, String)*): Unit = {
+                                     topic: String,
+                                     addPartitions: Boolean,
+                                     failOnDataLoss: Boolean,
+                                     options: (String, String)*): Unit = {
     testUtils.createTopic(topic, partitions = 5)
     testUtils.sendMessages(topic, Array("-1"))
     require(testUtils.getLatestOffsets(Set(topic)).size === 5)
@@ -811,12 +816,14 @@ class KafkaSourceSuite extends KafkaSourceTest {
   }
 
   private def testFromEarliestOffsets(
-      topic: String,
-      addPartitions: Boolean,
-      failOnDataLoss: Boolean,
-      options: (String, String)*): Unit = {
+                                       topic: String,
+                                       addPartitions: Boolean,
+                                       failOnDataLoss: Boolean,
+                                       options: (String, String)*): Unit = {
     testUtils.createTopic(topic, partitions = 5)
-    testUtils.sendMessages(topic, (1 to 3).map { _.toString }.toArray)
+    testUtils.sendMessages(topic, (1 to 3).map {
+      _.toString
+    }.toArray)
     require(testUtils.getLatestOffsets(Set(topic)).size === 5)
 
     val reader = spark.readStream
@@ -874,10 +881,12 @@ class KafkaSourceStressSuite extends KafkaSourceTest {
     start + Random.nextInt(start + end - 1)
   }
 
-  test("stress test with multiple topics and partitions")  {
+  test("stress test with multiple topics and partitions") {
     topics.foreach { topic =>
       testUtils.createTopic(topic, partitions = nextInt(1, 6))
-      testUtils.sendMessages(topic, (101 to 105).map { _.toString }.toArray)
+      testUtils.sendMessages(topic, (101 to 105).map {
+        _.toString
+      }.toArray)
     }
 
     // Create Kafka source that reads from latest offset

@@ -15,37 +15,37 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
 import org.apache.kafka.common.TopicPartition
 
 /**
- * Objects that represent desired offset range limits for starting,
- * ending, and specific offsets.
- */
+  * Objects that represent desired offset range limits for starting,
+  * ending, and specific offsets.
+  */
 private[kafka010] sealed trait KafkaOffsetRangeLimit
 
 /**
- * Represents the desire to bind to the earliest offsets in Kafka
- */
+  * Represents the desire to bind to the earliest offsets in Kafka
+  */
 private[kafka010] case object EarliestOffsetRangeLimit extends KafkaOffsetRangeLimit
 
 /**
- * Represents the desire to bind to the latest offsets in Kafka
- */
+  * Represents the desire to bind to the latest offsets in Kafka
+  */
 private[kafka010] case object LatestOffsetRangeLimit extends KafkaOffsetRangeLimit
 
 /**
- * Represents the desire to bind to specific offsets. A offset == -1 binds to the
- * latest offset, and offset == -2 binds to the earliest offset.
- */
+  * Represents the desire to bind to specific offsets. A offset == -1 binds to the
+  * latest offset, and offset == -2 binds to the earliest offset.
+  */
 private[kafka010] case class SpecificOffsetRangeLimit(
-    partitionOffsets: Map[TopicPartition, Long]) extends KafkaOffsetRangeLimit
+                                                       partitionOffsets: Map[TopicPartition, Long]) extends KafkaOffsetRangeLimit
 
 private[kafka010] object KafkaOffsetRangeLimit {
   /**
-   * Used to denote offset range limits that are resolved via Kafka
-   */
+    * Used to denote offset range limits that are resolved via Kafka
+    */
   val LATEST = -1L // indicates resolution to the latest offset
   val EARLIEST = -2L // indicates resolution to the earliest offset
 }

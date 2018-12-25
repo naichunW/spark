@@ -15,9 +15,9 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
-import java.util.UUID
+import java.util.{Locale, UUID}
 
 import org.apache.avro.Schema
 import org.apache.kafka.common.TopicPartition
@@ -27,20 +27,16 @@ import org.apache.spark.sql.sources.{BaseRelation, TableScan}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{Row, SQLContext}
 
-import scala.collection.JavaConversions._
-import scala.collection.mutable.ListBuffer
-
-
 
 private[kafka010] class KafkaRelation(
-    override val sqlContext: SQLContext,
-    strategy: ConsumerStrategy,
-    sourceOptions: Map[String, String],
-    specifiedKafkaParams: Map[String, String],
-    failOnDataLoss: Boolean,
-    startingOffsets: KafkaOffsetRangeLimit,
-    endingOffsets: KafkaOffsetRangeLimit)
-    extends BaseRelation with TableScan with Logging {
+                                       override val sqlContext: SQLContext,
+                                       strategy: ConsumerStrategy,
+                                       sourceOptions: Map[String, String],
+                                       specifiedKafkaParams: Map[String, String],
+                                       failOnDataLoss: Boolean,
+                                       startingOffsets: KafkaOffsetRangeLimit,
+                                       endingOffsets: KafkaOffsetRangeLimit)
+  extends BaseRelation with TableScan with Logging {
   assert(startingOffsets != LatestOffsetRangeLimit,
     "Starting offset not allowed to be set to latest offsets.")
   assert(endingOffsets != EarliestOffsetRangeLimit,
@@ -51,7 +47,7 @@ private[kafka010] class KafkaRelation(
     sqlContext.sparkContext.conf.getTimeAsMs("spark.network.timeout", "120s").toString
   ).toLong
 
-  private val avroSchema: String = sourceOptions.get(KafkaSourceProvider.AVRO_SCHEMA).get
+  private val avroSchema: String = sourceOptions.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }.get(KafkaSourceProvider.AVRO_SCHEMA).get
 
   /** Returns the schema of the data from this source */
   override def schema: StructType = {
@@ -102,9 +98,9 @@ private[kafka010] class KafkaRelation(
     // Calculate offset ranges
     val offsetRanges = untilPartitionOffsets.keySet.map { tp =>
       val fromOffset = fromPartitionOffsets.get(tp).getOrElse {
-          // This should not happen since topicPartitions contains all partitions not in
-          // fromPartitionOffsets
-          throw new IllegalStateException(s"$tp doesn't have a from offset")
+        // This should not happen since topicPartitions contains all partitions not in
+        // fromPartitionOffsets
+        throw new IllegalStateException(s"$tp doesn't have a from offset")
       }
       val untilOffset = untilPartitionOffsets(tp)
       KafkaSourceRDDOffsetRange(tp, fromOffset, untilOffset, None)
@@ -118,25 +114,25 @@ private[kafka010] class KafkaRelation(
       KafkaSourceProvider.kafkaParamsForExecutors(specifiedKafkaParams, uniqueGroupId)
     val rdd = new KafkaSourceRDD(
       sqlContext.sparkContext, executorKafkaParams, offsetRanges,
-      pollTimeoutMs, failOnDataLoss, reuseKafkaConsumer = false,avroSchema,schema)
-//      .map { cr =>
-//      InternalRow(
-//        cr.key,
-//        cr.value,
-//        UTF8String.fromString(cr.topic),
-//        cr.partition,
-//        cr.offset,
-//        DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(cr.timestamp)),
-//        cr.timestampType.id)
-//    }
+      pollTimeoutMs, failOnDataLoss, reuseKafkaConsumer = false, avroSchema, schema)
+    //      .map { cr =>
+    //      InternalRow(
+    //        cr.key,
+    //        cr.value,
+    //        UTF8String.fromString(cr.topic),
+    //        cr.partition,
+    //        cr.offset,
+    //        DateTimeUtils.fromJavaTimestamp(new java.sql.Timestamp(cr.timestamp)),
+    //        cr.timestampType.id)
+    //    }
     sqlContext.internalCreateDataFrame(rdd, schema).rdd
   }
 
   private def getPartitionOffsets(
-      kafkaReader: KafkaOffsetReader,
-      kafkaOffsets: KafkaOffsetRangeLimit): Map[TopicPartition, Long] = {
+                                   kafkaReader: KafkaOffsetReader,
+                                   kafkaOffsets: KafkaOffsetRangeLimit): Map[TopicPartition, Long] = {
     def validateTopicPartitions(partitions: Set[TopicPartition],
-      partitionOffsets: Map[TopicPartition, Long]): Map[TopicPartition, Long] = {
+                                partitionOffsets: Map[TopicPartition, Long]): Map[TopicPartition, Long] = {
       assert(partitions == partitionOffsets.keySet,
         "If startingOffsets contains specific offsets, you must specify all TopicPartitions.\n" +
           "Use -1 for latest, -2 for earliest, if you don't care.\n" +
@@ -144,6 +140,7 @@ private[kafka010] class KafkaRelation(
       logDebug(s"Partitions assigned to consumer: $partitions. Seeking to $partitionOffsets")
       partitionOffsets
     }
+
     val partitions = kafkaReader.fetchTopicPartitions()
     // Obtain TopicPartition offsets with late binding support
     kafkaOffsets match {

@@ -15,37 +15,41 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
+import java.util.concurrent.atomic.AtomicBoolean
 import java.{util => ju}
 
+import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient
+import org.apache.avro.{Schema, SchemaBuilder}
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.execution.{QueryExecution, SQLExecution}
 import org.apache.spark.sql.types.{BinaryType, StringType}
+import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.util.Utils
 
 /**
- * The [[KafkaWriter]] class is used to write data from a batch query
- * or structured streaming query, given by a [[QueryExecution]], to Kafka.
- * The data is assumed to have a value column, and an optional topic and key
- * columns. If the topic column is missing, then the topic must come from
- * the 'topic' configuration option. If the key column is missing, then a
- * null valued key field will be added to the
- * [[org.apache.kafka.clients.producer.ProducerRecord]].
- */
+  * The [[KafkaWriter]] class is used to write data from a batch query
+  * or structured streaming query, given by a [[QueryExecution]], to Kafka.
+  * The data is assumed to have a value column, and an optional topic and key
+  * columns. If the topic column is missing, then the topic must come from
+  * the 'topic' configuration option. If the key column is missing, then a
+  * null valued key field will be added to the
+  * [[org.apache.kafka.clients.producer.ProducerRecord]].
+  */
 private[kafka010] object KafkaWriter extends Logging {
   val TOPIC_ATTRIBUTE_NAME: String = "topic"
   val KEY_ATTRIBUTE_NAME: String = "key"
   val VALUE_ATTRIBUTE_NAME: String = "value"
+  val FIRST_SCHEMA_INIT: AtomicBoolean = new AtomicBoolean(true)
 
   override def toString: String = "KafkaWriter"
 
   def validateQuery(
-      queryExecution: QueryExecution,
-      kafkaParameters: ju.Map[String, Object],
-      topic: Option[String] = None): Unit = {
+                     queryExecution: QueryExecution,
+                     kafkaParameters: ju.Map[String, Object],
+                     topic: Option[String] = None): Unit = {
     val schema = queryExecution.analyzed.output
     schema.find(_.name == TOPIC_ATTRIBUTE_NAME).getOrElse(
       if (topic.isEmpty) {
@@ -79,15 +83,32 @@ private[kafka010] object KafkaWriter extends Logging {
   }
 
   def write(
-      sparkSession: SparkSession,
-      queryExecution: QueryExecution,
-      kafkaParameters: ju.Map[String, Object],
-      topic: Option[String] = None): Unit = {
-    val schema = queryExecution.analyzed.output
-    validateQuery(queryExecution, kafkaParameters, topic)
+             sparkSession: SparkSession,
+             queryExecution: QueryExecution,
+             kafkaParameters: ju.Map[String, Object],
+             topic: Option[String], recordNamespace: String, schemaRegistry: Option[String]): Unit = {
+    val structType = queryExecution.analyzed.schema
+    //第一次运行，包含schemaRegistry地址时，自动注册schema
+    if (FIRST_SCHEMA_INIT.getAndSet(false)) {
+      val builder = SchemaBuilder.record(topic.get).namespace(recordNamespace)
+      val schema: Schema = SchemaConverters.convertStructToAvro(
+        structType, builder, recordNamespace)
+      logInfo("Kafka_Avro Sink output schema: "+System.getProperty("line.separator") + schema.toString(true))
+
+      if (schemaRegistry.isDefined) {
+        try {
+          val url = schemaRegistry.get
+          val client = new CachedSchemaRegistryClient(url, 100)
+          client.register(topic.get, schema)
+        } catch {
+          case e: Exception => logError("Kafka_Avro Sink register schema failed", e)
+        }
+      }
+    }
+    //    validateQuery(queryExecution, kafkaParameters, topic)
     SQLExecution.withNewExecutionId(sparkSession, queryExecution) {
       queryExecution.toRdd.foreachPartition { iter =>
-        val writeTask = new KafkaWriteTask(kafkaParameters, schema, topic)
+        val writeTask = new KafkaWriteTask(kafkaParameters, structType, topic.get, recordNamespace)
         Utils.tryWithSafeFinally(block = writeTask.execute(iter))(
           finallyBlock = writeTask.close())
       }

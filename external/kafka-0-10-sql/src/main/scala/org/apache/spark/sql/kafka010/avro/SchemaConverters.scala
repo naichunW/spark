@@ -1,17 +1,15 @@
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
 import java.nio.ByteBuffer
 
-import scala.collection.JavaConverters._
-
-import org.apache.avro.generic.GenericFixed
-import org.apache.avro.generic.{GenericData, GenericRecord}
-import org.apache.avro.{Schema, SchemaBuilder}
-import org.apache.avro.SchemaBuilder._
 import org.apache.avro.Schema.Type._
-
+import org.apache.avro.SchemaBuilder._
+import org.apache.avro.generic.{GenericData, GenericFixed, GenericRecord}
+import org.apache.avro.{Schema, SchemaBuilder}
 import org.apache.spark.sql.catalyst.expressions.GenericRow
 import org.apache.spark.sql.types._
+
+import scala.collection.JavaConverters._
 
 /**
   * This object contains method that are used to convert sparkSQL schemas to avro schemas and vice
@@ -118,13 +116,13 @@ object SchemaConverters {
     * Returns a converter function to convert row in avro format to GenericRow of catalyst.
     *
     * @param sourceAvroSchema Source schema before conversion inferred from avro file by passed in
-    *                       by user.
-    * @param targetSqlType Target catalyst sql type after the conversion.
+    *                         by user.
+    * @param targetSqlType    Target catalyst sql type after the conversion.
     * @return returns a converter function to convert row in avro format to GenericRow of catalyst.
     */
   private[kafka010] def createConverterToSQL(
-                                          sourceAvroSchema: Schema,
-                                          targetSqlType: DataType): AnyRef => AnyRef = {
+                                              sourceAvroSchema: Schema,
+                                              targetSqlType: DataType): AnyRef => AnyRef = {
 
     def createConverter(avroSchema: Schema,
                         sqlType: DataType, path: List[String]): AnyRef => AnyRef = {
@@ -265,14 +263,15 @@ object SchemaConverters {
                       createConverter(schema, field.dataType, path :+ field.name)
                   }
 
-                  (item: AnyRef) => if (item == null) {
-                    null
-                  } else {
-                    val i = GenericData.get().resolveUnion(avroSchema, item)
-                    val converted = new Array[Any](fieldConverters.length)
-                    converted(i) = fieldConverters(i)(item)
-                    new GenericRow(converted)
-                  }
+                  (item: AnyRef) =>
+                    if (item == null) {
+                      null
+                    } else {
+                      val i = GenericData.get().resolveUnion(avroSchema, item)
+                      val converted = new Array[Any](fieldConverters.length)
+                      converted(i) = fieldConverters(i)(item)
+                      new GenericRow(converted)
+                    }
                 case _ => throw new IncompatibleSchemaException(
                   s"Cannot convert Avro schema to catalyst type because schema at path " +
                     s"${path.mkString(".")} is not compatible " +
@@ -394,9 +393,9 @@ object SchemaConverters {
     * with the element name, otherwise it returns the current namespace as it is.
     */
   private[kafka010] def getNewRecordNamespace(
-                                           elementDataType: DataType,
-                                           currentRecordNamespace: String,
-                                           elementName: String): String = {
+                                               elementDataType: DataType,
+                                               currentRecordNamespace: String,
+                                               elementName: String): String = {
 
     elementDataType match {
       case StructType(_) => s"$currentRecordNamespace.$elementName"

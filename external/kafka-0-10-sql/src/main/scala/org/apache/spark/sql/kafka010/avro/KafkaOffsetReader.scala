@@ -15,42 +15,41 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
-import java.{util => ju}
 import java.util.concurrent.{Executors, ThreadFactory}
-
-import scala.collection.JavaConverters._
-import scala.concurrent.{ExecutionContext, Future}
-import scala.concurrent.duration.Duration
-import scala.util.control.NonFatal
+import java.{util => ju}
 
 import org.apache.kafka.clients.consumer.{Consumer, ConsumerConfig, KafkaConsumer}
 import org.apache.kafka.common.TopicPartition
-
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.types._
 import org.apache.spark.util.{ThreadUtils, UninterruptibleThread}
 
+import scala.collection.JavaConverters._
+import scala.concurrent.duration.Duration
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.control.NonFatal
+
 /**
- * This class uses Kafka's own [[KafkaConsumer]] API to read data offsets from Kafka.
- * The [[ConsumerStrategy]] class defines which Kafka topics and partitions should be read
- * by this source. These strategies directly correspond to the different consumption options
- * in. This class is designed to return a configured [[KafkaConsumer]] that is used by the
- * [[KafkaSource]] to query for the offsets. See the docs on
- * [[org.apache.spark.sql.kafka010.ConsumerStrategy]]
- * for more details.
- *
- * Note: This class is not ThreadSafe
- */
+  * This class uses Kafka's own [[KafkaConsumer]] API to read data offsets from Kafka.
+  * The [[ConsumerStrategy]] class defines which Kafka topics and partitions should be read
+  * by this source. These strategies directly correspond to the different consumption options
+  * in. This class is designed to return a configured [[KafkaConsumer]] that is used by the
+  * [[KafkaSource]] to query for the offsets. See the docs on
+  * [[ConsumerStrategy]]
+  * for more details.
+  *
+  * Note: This class is not ThreadSafe
+  */
 private[kafka010] class KafkaOffsetReader(
-    consumerStrategy: ConsumerStrategy,
-    driverKafkaParams: ju.Map[String, Object],
-    readerOptions: Map[String, String],
-    driverGroupIdPrefix: String) extends Logging {
+                                           consumerStrategy: ConsumerStrategy,
+                                           driverKafkaParams: ju.Map[String, Object],
+                                           readerOptions: Map[String, String],
+                                           driverGroupIdPrefix: String) extends Logging {
   /**
-   * Used to ensure execute fetch operations execute in an UninterruptibleThread
-   */
+    * Used to ensure execute fetch operations execute in an UninterruptibleThread
+    */
   val kafkaReaderThread = Executors.newSingleThreadExecutor(new ThreadFactory {
     override def newThread(r: Runnable): Thread = {
       val t = new UninterruptibleThread("Kafka Offset Reader") {
@@ -65,16 +64,16 @@ private[kafka010] class KafkaOffsetReader(
   val execContext = ExecutionContext.fromExecutorService(kafkaReaderThread)
 
   /**
-   * Place [[groupId]] and [[nextId]] here so that they are initialized before any consumer is
-   * created -- see SPARK-19564.
-   */
+    * Place [[groupId]] and [[nextId]] here so that they are initialized before any consumer is
+    * created -- see SPARK-19564.
+    */
   private var groupId: String = null
   private var nextId = 0
 
   /**
-   * A KafkaConsumer used in the driver to query the latest Kafka offsets. This only queries the
-   * offsets and never commits them.
-   */
+    * A KafkaConsumer used in the driver to query the latest Kafka offsets. This only queries the
+    * offsets and never commits them.
+    */
   protected var consumer = createConsumer()
 
   private val maxOffsetFetchAttempts =
@@ -92,8 +91,8 @@ private[kafka010] class KafkaOffsetReader(
   override def toString(): String = consumerStrategy.toString
 
   /**
-   * Closes the connection to Kafka, and cleans up state.
-   */
+    * Closes the connection to Kafka, and cleans up state.
+    */
   def close(): Unit = {
     runUninterruptibly {
       consumer.close()
@@ -102,8 +101,8 @@ private[kafka010] class KafkaOffsetReader(
   }
 
   /**
-   * @return The Set of TopicPartitions for a given topic
-   */
+    * @return The Set of TopicPartitions for a given topic
+    */
   def fetchTopicPartitions(): Set[TopicPartition] = runUninterruptibly {
     assert(Thread.currentThread().isInstanceOf[UninterruptibleThread])
     // Poll to get the latest assigned partitions
@@ -114,12 +113,12 @@ private[kafka010] class KafkaOffsetReader(
   }
 
   /**
-   * Resolves the specific offsets based on Kafka seek positions.
-   * This method resolves offset value -1 to the latest and -2 to the
-   * earliest Kafka seek position.
-   */
+    * Resolves the specific offsets based on Kafka seek positions.
+    * This method resolves offset value -1 to the latest and -2 to the
+    * earliest Kafka seek position.
+    */
   def fetchSpecificOffsets(
-      partitionOffsets: Map[TopicPartition, Long]): Map[TopicPartition, Long] =
+                            partitionOffsets: Map[TopicPartition, Long]): Map[TopicPartition, Long] =
     runUninterruptibly {
       withRetriesWithoutInterrupt {
         // Poll to get the latest assigned partitions
@@ -146,9 +145,9 @@ private[kafka010] class KafkaOffsetReader(
     }
 
   /**
-   * Fetch the earliest offsets for the topic partitions that are indicated
-   * in the [[ConsumerStrategy]].
-   */
+    * Fetch the earliest offsets for the topic partitions that are indicated
+    * in the [[ConsumerStrategy]].
+    */
   def fetchEarliestOffsets(): Map[TopicPartition, Long] = runUninterruptibly {
     withRetriesWithoutInterrupt {
       // Poll to get the latest assigned partitions
@@ -165,9 +164,9 @@ private[kafka010] class KafkaOffsetReader(
   }
 
   /**
-   * Fetch the latest offsets for the topic partitions that are indicated
-   * in the [[ConsumerStrategy]].
-   */
+    * Fetch the latest offsets for the topic partitions that are indicated
+    * in the [[ConsumerStrategy]].
+    */
   def fetchLatestOffsets(): Map[TopicPartition, Long] = runUninterruptibly {
     withRetriesWithoutInterrupt {
       // Poll to get the latest assigned partitions
@@ -184,11 +183,11 @@ private[kafka010] class KafkaOffsetReader(
   }
 
   /**
-   * Fetch the earliest offsets for specific topic partitions.
-   * The return result may not contain some partitions if they are deleted.
-   */
+    * Fetch the earliest offsets for specific topic partitions.
+    * The return result may not contain some partitions if they are deleted.
+    */
   def fetchEarliestOffsets(
-      newPartitions: Seq[TopicPartition]): Map[TopicPartition, Long] = {
+                            newPartitions: Seq[TopicPartition]): Map[TopicPartition, Long] = {
     if (newPartitions.isEmpty) {
       Map.empty[TopicPartition, Long]
     } else {
@@ -215,11 +214,11 @@ private[kafka010] class KafkaOffsetReader(
   }
 
   /**
-   * This method ensures that the closure is called in an [[UninterruptibleThread]].
-   * This is required when communicating with the [[KafkaConsumer]]. In the case
-   * of streaming queries, we are already running in an [[UninterruptibleThread]],
-   * however for batch mode this is not the case.
-   */
+    * This method ensures that the closure is called in an [[UninterruptibleThread]].
+    * This is required when communicating with the [[KafkaConsumer]]. In the case
+    * of streaming queries, we are already running in an [[UninterruptibleThread]],
+    * however for batch mode this is not the case.
+    */
   private def runUninterruptibly[T](body: => T): T = {
     if (!Thread.currentThread.isInstanceOf[UninterruptibleThread]) {
       val future = Future {
@@ -232,15 +231,15 @@ private[kafka010] class KafkaOffsetReader(
   }
 
   /**
-   * Helper function that does multiple retries on a body of code that returns offsets.
-   * Retries are needed to handle transient failures. For e.g. race conditions between getting
-   * assignment and getting position while topics/partitions are deleted can cause NPEs.
-   *
-   * This method also makes sure `body` won't be interrupted to workaround a potential issue in
-   * `KafkaConsumer.poll`. (KAFKA-1894)
-   */
+    * Helper function that does multiple retries on a body of code that returns offsets.
+    * Retries are needed to handle transient failures. For e.g. race conditions between getting
+    * assignment and getting position while topics/partitions are deleted can cause NPEs.
+    *
+    * This method also makes sure `body` won't be interrupted to workaround a potential issue in
+    * `KafkaConsumer.poll`. (KAFKA-1894)
+    */
   private def withRetriesWithoutInterrupt(
-      body: => Map[TopicPartition, Long]): Map[TopicPartition, Long] = {
+                                           body: => Map[TopicPartition, Long]): Map[TopicPartition, Long] = {
     // Make sure `KafkaConsumer.poll` won't be interrupted (KAFKA-1894)
     assert(Thread.currentThread().isInstanceOf[UninterruptibleThread])
 
@@ -288,9 +287,9 @@ private[kafka010] class KafkaOffsetReader(
   }
 
   /**
-   * Create a consumer using the new generated group id. We always use a new consumer to avoid
-   * just using a broken consumer to retry on Kafka errors, which likely will fail again.
-   */
+    * Create a consumer using the new generated group id. We always use a new consumer to avoid
+    * just using a broken consumer to retry on Kafka errors, which likely will fail again.
+    */
   private def createConsumer(): Consumer[Array[Byte], Array[Byte]] = synchronized {
     val newKafkaParams = new ju.HashMap[String, Object](driverKafkaParams)
     newKafkaParams.put(ConsumerConfig.GROUP_ID_CONFIG, nextGroupId())

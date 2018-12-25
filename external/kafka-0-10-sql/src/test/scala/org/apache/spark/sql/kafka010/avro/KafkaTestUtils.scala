@@ -15,17 +15,13 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
 import java.io.{File, IOException}
 import java.lang.{Integer => JInt}
 import java.net.InetSocketAddress
-import java.util.{Map => JMap, Properties}
 import java.util.concurrent.TimeUnit
-
-import scala.collection.JavaConverters._
-import scala.language.postfixOps
-import scala.util.Random
+import java.util.{Properties, Map => JMap}
 
 import kafka.admin.AdminUtils
 import kafka.api.Request
@@ -36,20 +32,23 @@ import org.apache.kafka.clients.consumer.KafkaConsumer
 import org.apache.kafka.clients.producer._
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.serialization.{StringDeserializer, StringSerializer}
+import org.apache.spark.SparkConf
+import org.apache.spark.internal.Logging
+import org.apache.spark.util.Utils
 import org.apache.zookeeper.server.{NIOServerCnxnFactory, ZooKeeperServer}
 import org.scalatest.concurrent.Eventually._
 import org.scalatest.time.SpanSugar._
 
-import org.apache.spark.internal.Logging
-import org.apache.spark.util.Utils
-import org.apache.spark.SparkConf
+import scala.collection.JavaConverters._
+import scala.language.postfixOps
+import scala.util.Random
 
 /**
- * This is a helper class for Kafka test suites. This has the functionality to set up
- * and tear down local Kafka servers, and to push data using Kafka producers.
- *
- * The reason to put Kafka test utility class in src is to test Python related Kafka APIs.
- */
+  * This is a helper class for Kafka test suites. This has the functionality to set up
+  * and tear down local Kafka servers, and to push data using Kafka producers.
+  *
+  * The reason to put Kafka test utility class in src is to test Python related Kafka APIs.
+  */
 class KafkaTestUtils(withBrokerProps: Map[String, Object] = Map.empty) extends Logging {
 
   // Zookeeper related configurations
@@ -225,9 +224,9 @@ class KafkaTestUtils(withBrokerProps: Map[String, Object] = Map.empty) extends L
 
   /** Send the array of messages to the Kafka broker using specified partition */
   def sendMessages(
-      topic: String,
-      messages: Array[String],
-      partition: Option[Int]): Seq[(String, RecordMetadata)] = {
+                    topic: String,
+                    messages: Array[String],
+                    partition: Option[Int]): Seq[(String, RecordMetadata)] = {
     producer = new KafkaProducer[String, String](producerConfiguration)
     val offsets = try {
       messages.map { m =>
@@ -237,7 +236,7 @@ class KafkaTestUtils(withBrokerProps: Map[String, Object] = Map.empty) extends L
         }
         val metadata =
           producer.send(record).get(10, TimeUnit.SECONDS)
-          logInfo(s"\tSent $m to partition ${metadata.partition}, offset ${metadata.offset}")
+        logInfo(s"\tSent $m to partition ${metadata.partition}, offset ${metadata.offset}")
         (m, metadata)
       }
     } finally {
@@ -319,9 +318,9 @@ class KafkaTestUtils(withBrokerProps: Map[String, Object] = Map.empty) extends L
 
   /** Verify topic is deleted in all places, e.g, brokers, zookeeper. */
   private def verifyTopicDeletion(
-      topic: String,
-      numPartitions: Int,
-      servers: Seq[KafkaServer]): Unit = {
+                                   topic: String,
+                                   numPartitions: Int,
+                                   servers: Seq[KafkaServer]): Unit = {
     val topicAndPartitions = (0 until numPartitions).map(TopicAndPartition(topic, _))
 
     import ZkUtils._
@@ -353,10 +352,10 @@ class KafkaTestUtils(withBrokerProps: Map[String, Object] = Map.empty) extends L
 
   /** Verify topic is deleted. Retry to delete the topic if not. */
   private def verifyTopicDeletionWithRetries(
-      zkUtils: ZkUtils,
-      topic: String,
-      numPartitions: Int,
-      servers: Seq[KafkaServer]) {
+                                              zkUtils: ZkUtils,
+                                              topic: String,
+                                              numPartitions: Int,
+                                              servers: Seq[KafkaServer]) {
     eventually(timeout(60.seconds), interval(200.millis)) {
       try {
         verifyTopicDeletion(topic, numPartitions, servers)
@@ -383,6 +382,7 @@ class KafkaTestUtils(withBrokerProps: Map[String, Object] = Map.empty) extends L
       case _ =>
         false
     }
+
     eventually(timeout(60.seconds)) {
       assert(isPropagated, s"Partition [$topic, $partition] metadata not propagated after timeout")
     }
@@ -422,5 +422,6 @@ class KafkaTestUtils(withBrokerProps: Map[String, Object] = Map.empty) extends L
       }
     }
   }
+
 }
 

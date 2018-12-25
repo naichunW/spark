@@ -15,17 +15,16 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
 import org.apache.kafka.common.TopicPartition
-import org.scalatest.BeforeAndAfter
-
 import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.test.SharedSQLContext
 import org.apache.spark.util.Utils
+import org.scalatest.BeforeAndAfter
 
 class KafkaRelationSuite extends QueryTest with BeforeAndAfter with SharedSQLContext {
 
@@ -56,9 +55,9 @@ class KafkaRelationSuite extends QueryTest with BeforeAndAfter with SharedSQLCon
   }
 
   private def createDF(
-      topic: String,
-      withOptions: Map[String, String] = Map.empty[String, String],
-      brokerAddress: Option[String] = None) = {
+                        topic: String,
+                        withOptions: Map[String, String] = Map.empty[String, String],
+                        brokerAddress: Option[String] = None) = {
     val df = spark
       .read
       .format("kafka")
@@ -113,18 +112,18 @@ class KafkaRelationSuite extends QueryTest with BeforeAndAfter with SharedSQLCon
     val startPartitionOffsets = Map(
       new TopicPartition(topic, 0) -> -2L, // -2 => earliest
       new TopicPartition(topic, 1) -> -2L,
-      new TopicPartition(topic, 2) -> 0L   // explicit earliest
+      new TopicPartition(topic, 2) -> 0L // explicit earliest
     )
     val startingOffsets = JsonUtils.partitionOffsets(startPartitionOffsets)
 
     val endPartitionOffsets = Map(
       new TopicPartition(topic, 0) -> -1L, // -1 => latest
       new TopicPartition(topic, 1) -> -1L,
-      new TopicPartition(topic, 2) -> 1L  // explicit offset happens to = the latest
+      new TopicPartition(topic, 2) -> 1L // explicit offset happens to = the latest
     )
     val endingOffsets = JsonUtils.partitionOffsets(endPartitionOffsets)
     val df = createDF(topic,
-        withOptions = Map("startingOffsets" -> startingOffsets, "endingOffsets" -> endingOffsets))
+      withOptions = Map("startingOffsets" -> startingOffsets, "endingOffsets" -> endingOffsets))
     checkAnswer(df, (0 to 20).map(_.toString).toDF)
 
     // static offset partition 2, nothing should change
@@ -155,12 +154,12 @@ class KafkaRelationSuite extends QueryTest with BeforeAndAfter with SharedSQLCon
     var kafkaUtils: KafkaTestUtils = null
     try {
       /**
-       * The following settings will ensure that all log entries
-       * are removed following a call to cleanupLogs
-       */
+        * The following settings will ensure that all log entries
+        * are removed following a call to cleanupLogs
+        */
       val brokerProps = Map[String, Object](
         "log.retention.bytes" -> 1.asInstanceOf[AnyRef], // retain nothing
-        "log.retention.ms" -> 1.asInstanceOf[AnyRef]     // no wait time
+        "log.retention.ms" -> 1.asInstanceOf[AnyRef] // no wait time
       )
       kafkaUtils = new KafkaTestUtils(withBrokerProps = brokerProps)
       kafkaUtils.setup()
@@ -205,7 +204,7 @@ class KafkaRelationSuite extends QueryTest with BeforeAndAfter with SharedSQLCon
       "for batch queries on Kafka")
 
     // Now do it with an explicit json start offset indicating latest
-    val startPartitionOffsets = Map( new TopicPartition("t", 0) -> -1L)
+    val startPartitionOffsets = Map(new TopicPartition("t", 0) -> -1L)
     val startingOffsets = JsonUtils.partitionOffsets(startPartitionOffsets)
     testBadOptions("subscribe" -> "t", "startingOffsets" -> startingOffsets)(
       "startingOffsets for t-0 can't be latest for batch queries on Kafka")

@@ -15,11 +15,11 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
-
+package org.apache.spark.sql.kafka010.avro
 
 import java.io._
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 import java.{util => ju}
 
 import org.apache.avro.Schema
@@ -30,11 +30,8 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.ExecutorCacheTaskLocation
 import org.apache.spark.sql._
 import org.apache.spark.sql.execution.streaming._
-import org.apache.spark.sql.kafka010.KafkaSource._
 import org.apache.spark.sql.types._
-import scala.collection.JavaConversions._
-
-import scala.collection.mutable.ListBuffer
+import org.apache.spark.sql.kafka010.avro.KafkaSource._
 
 /**
   * A [[Source]] that reads data from Kafka using the following design.
@@ -90,7 +87,7 @@ private[kafka010] class KafkaSource(
   private val maxOffsetsPerTrigger =
     sourceOptions.get("maxOffsetsPerTrigger").map(_.toLong)
 
-  private val avroSchema: String = sourceOptions.get(KafkaSourceProvider.AVRO_SCHEMA).get
+  private val avroSchema: String = sourceOptions.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }.get(KafkaSourceProvider.AVRO_SCHEMA).get
 
   /** Returns the schema of the data from this source */
   override def schema: StructType = {
@@ -305,7 +302,7 @@ private[kafka010] class KafkaSource(
     // Create an RDD that reads from Kafka and get the (key, value) pair as byte arrays.
     val rdd = new KafkaSourceRDD(
       sc, executorKafkaParams, offsetRanges, pollTimeoutMs, failOnDataLoss,
-      reuseKafkaConsumer = true,avroSchema,schema)
+      reuseKafkaConsumer = true, avroSchema, schema)
     //      .map { cr =>
     //      InternalRow(
     //        cr.key,

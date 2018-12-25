@@ -15,15 +15,13 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
 import org.apache.kafka.clients.producer.ProducerConfig
 import org.apache.kafka.common.serialization.ByteArraySerializer
-import org.scalatest.time.SpanSugar._
-
 import org.apache.spark.SparkException
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, SpecificInternalRow, UnsafeProjection}
@@ -31,9 +29,11 @@ import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.streaming._
 import org.apache.spark.sql.test.SharedSQLContext
-import org.apache.spark.sql.types.{BinaryType, DataType}
+import org.apache.spark.sql.types.{BinaryType, DataType, StructType}
+import org.scalatest.time.SpanSugar._
 
 class KafkaSinkSuite extends StreamTest with SharedSQLContext {
+
   import testImplicits._
 
   protected var testUtils: KafkaTestUtils = _
@@ -206,7 +206,7 @@ class KafkaSinkSuite extends StreamTest with SharedSQLContext {
       withTopic = Some(topic),
       withOutputMode = Some(OutputMode.Update()))(
       withSelectExpr = "'foo' as topic",
-        "CAST(value as STRING) key", "CAST(count as STRING) value")
+      "CAST(value as STRING) key", "CAST(count as STRING) value")
 
     val reader = createKafkaReader(topic)
       .selectExpr("CAST(key AS STRING)", "CAST(value AS STRING)")
@@ -377,7 +377,7 @@ class KafkaSinkSuite extends StreamTest with SharedSQLContext {
     options.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, classOf[ByteArraySerializer].getName)
     val inputSchema = Seq(AttributeReference("value", BinaryType)())
     val data = new Array[Byte](15000) // large value
-    val writeTask = new KafkaWriteTask(options, inputSchema, Some(topic))
+    val writeTask = new KafkaWriteTask(options, StructType.fromAttributes(inputSchema), topic, "")
     try {
       val fieldTypes: Array[DataType] = Array(BinaryType)
       val converter = UnsafeProjection.create(fieldTypes)
@@ -405,11 +405,11 @@ class KafkaSinkSuite extends StreamTest with SharedSQLContext {
   }
 
   private def createKafkaWriter(
-      input: DataFrame,
-      withTopic: Option[String] = None,
-      withOutputMode: Option[OutputMode] = None,
-      withOptions: Map[String, String] = Map[String, String]())
-      (withSelectExpr: String*): StreamingQuery = {
+                                 input: DataFrame,
+                                 withTopic: Option[String] = None,
+                                 withOutputMode: Option[OutputMode] = None,
+                                 withOptions: Map[String, String] = Map[String, String]())
+                               (withSelectExpr: String*): StreamingQuery = {
     var stream: DataStreamWriter[Row] = null
     withTempDir { checkpointDir =>
       var df = input.toDF()

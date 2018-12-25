@@ -15,10 +15,9 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.kafka010
+package org.apache.spark.sql.kafka010.avro
 
 import org.apache.kafka.common.TopicPartition
-
 import org.apache.spark.SparkFunSuite
 
 class JsonUtilsSuite extends SparkFunSuite {
