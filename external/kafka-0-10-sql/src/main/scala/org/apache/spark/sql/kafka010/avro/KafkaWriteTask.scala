@@ -179,7 +179,7 @@ private[kafka010] class KafkaWriteTask(
             targetArray
           }
         }
-      case MapType(StringType, valueType, _) =>
+      case MapType(_, valueType, _) =>
         val valueConverter = createConverterToAvro(
           valueType,
           structName,
@@ -189,8 +189,8 @@ private[kafka010] class KafkaWriteTask(
             null
           } else {
             val javaMap = new ju.HashMap[String, Any]()
-            item.asInstanceOf[Map[String, Any]].foreach { case (key, value) =>
-              javaMap.put(key, valueConverter(value))
+            item.asInstanceOf[Map[Any, Any]].foreach { case (key, value) =>
+              javaMap.put(key.toString, valueConverter(value))
             }
             javaMap
           }

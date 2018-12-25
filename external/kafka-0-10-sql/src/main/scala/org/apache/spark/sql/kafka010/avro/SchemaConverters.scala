@@ -212,7 +212,7 @@ object SchemaConverters {
               }
             }
           }
-        case (mapType: MapType, MAP) if mapType.keyType == StringType =>
+        case (mapType: MapType, MAP) =>
           val valueConverter = createConverter(avroSchema.getValueType, mapType.valueType, path)
           val allowsNull = mapType.valueContainsNull
           (item: AnyRef) => {
@@ -296,7 +296,7 @@ object SchemaConverters {
     * This function is used to convert some sparkSQL type to avro type. Note that this function won't
     * be used to construct fields of avro record (convertFieldTypeToAvro is used for that).
     */
-  private def convertTypeToAvro[T](
+  private[kafka010] def convertTypeToAvro[T](
                                     dataType: DataType,
                                     schemaBuilder: BaseTypeBuilder[T],
                                     structName: String,
@@ -320,7 +320,7 @@ object SchemaConverters {
         val elementSchema = convertTypeToAvro(elementType, builder, structName, recordNamespace)
         schemaBuilder.array().items(elementSchema)
 
-      case MapType(StringType, valueType, _) =>
+      case MapType(_, valueType, _) =>
         val builder = getSchemaBuilder(dataType.asInstanceOf[MapType].valueContainsNull)
         val valueSchema = convertTypeToAvro(valueType, builder, structName, recordNamespace)
         schemaBuilder.map().values(valueSchema)
@@ -368,7 +368,7 @@ object SchemaConverters {
           getNewRecordNamespace(elementType, recordNamespace, structName))
         newFieldBuilder.array().items(elementSchema)
 
-      case MapType(StringType, valueType, _) =>
+      case MapType(_, valueType, _) =>
         val builder = getSchemaBuilder(dataType.asInstanceOf[MapType].valueContainsNull)
         val valueSchema = convertTypeToAvro(
           valueType,
