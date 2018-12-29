@@ -24,13 +24,11 @@ import org.apache.avro.generic.{GenericData, GenericRecord}
 import org.apache.avro.io.{BinaryDecoder, DecoderFactory}
 import org.apache.avro.specific.SpecificDatumReader
 import org.apache.kafka.common.TopicPartition
-import org.apache.spark.partial.{BoundedDouble, PartialResult}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.encoders.RowEncoder
 import org.apache.spark.sql.catalyst.expressions.GenericRow
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.storage.StorageLevel
 import org.apache.spark.util.NextIterator
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 
@@ -188,9 +186,9 @@ private[kafka010] class KafkaSourceRDD(
                   while (!decoder.isEnd) {
                     reader.read(record, decoder)
                     val safeDataRow = rowConverter(record).asInstanceOf[GenericRow]
-                    // The safeDataRow is reused, we must do a copy
+                    // The row is reused, we must do a copy
                     val row = encoderForDataColumns.toRow(safeDataRow)
-                    datas.append(row)
+                    datas.append(row.copy())
                   }
                 } catch {
                   case e: Exception => logWarning("kafka message avro decode error", e)
