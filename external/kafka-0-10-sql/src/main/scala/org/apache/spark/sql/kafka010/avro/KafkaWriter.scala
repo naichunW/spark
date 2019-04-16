@@ -86,7 +86,10 @@ private[kafka010] object KafkaWriter extends Logging {
              sparkSession: SparkSession,
              queryExecution: QueryExecution,
              kafkaParameters: ju.Map[String, Object],
-             topic: Option[String], recordNamespace: String, schemaRegistry: Option[String]): Unit = {
+             topic: Option[String],
+             recordNamespace: String,
+             schemaRegistry: Option[String],
+             packageSize:Int ): Unit = {
     val structType = queryExecution.analyzed.schema
     //第一次运行，包含schemaRegistry地址时，自动注册schema
     if (FIRST_SCHEMA_INIT.getAndSet(false)) {
@@ -108,7 +111,7 @@ private[kafka010] object KafkaWriter extends Logging {
     //    validateQuery(queryExecution, kafkaParameters, topic)
     SQLExecution.withNewExecutionId(sparkSession, queryExecution) {
       queryExecution.toRdd.foreachPartition { iter =>
-        val writeTask = new KafkaWriteTask(kafkaParameters, structType, topic.get, recordNamespace)
+        val writeTask = new KafkaWriteTask(kafkaParameters, structType, topic.get, recordNamespace,packageSize)
         Utils.tryWithSafeFinally(block = writeTask.execute(iter))(
           finallyBlock = writeTask.close())
       }

@@ -160,9 +160,10 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
     val specifiedKafkaParams = kafkaParamsForProducer(parameters)
     val topic = parameters.get(TOPIC_OPTION_KEY).map(_.trim)
     val recordNamespace = parameters.getOrElse("recordNamespace", "")
+    val packageSize = parameters.getOrElse("packageSize","1000").toInt
     val schemaRegistry = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }.get(SCHEMA_REGISTRY).map(_.trim)
     new KafkaSink(sqlContext,
-      new ju.HashMap[String, Object](specifiedKafkaParams.asJava), topic, recordNamespace, schemaRegistry)
+      new ju.HashMap[String, Object](specifiedKafkaParams.asJava), topic, recordNamespace, schemaRegistry,packageSize)
   }
 
   override def createRelation(
@@ -179,10 +180,11 @@ private[kafka010] class KafkaSourceProvider extends DataSourceRegister
     }
     val topic = parameters.get(TOPIC_OPTION_KEY).map(_.trim)
     val recordNamespace = parameters.getOrElse("recordNamespace", "")
+    val packageSize = parameters.getOrElse("packageSize","1000").toInt
     val schemaRegistry = parameters.map { case (k, v) => (k.toLowerCase(Locale.ROOT), v) }.get(SCHEMA_REGISTRY).map(_.trim)
     val specifiedKafkaParams = kafkaParamsForProducer(parameters)
     KafkaWriter.write(outerSQLContext.sparkSession, data.queryExecution,
-      new ju.HashMap[String, Object](specifiedKafkaParams.asJava), topic, recordNamespace, schemaRegistry)
+      new ju.HashMap[String, Object](specifiedKafkaParams.asJava), topic, recordNamespace, schemaRegistry,packageSize)
 
     /* This method is suppose to return a relation that reads the data that was written.
      * We cannot support this for Kafka. Therefore, in order to make things consistent,

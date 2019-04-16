@@ -28,7 +28,8 @@ private[kafka010] class KafkaSink(
                                    executorKafkaParams: ju.Map[String, Object],
                                    topic: Option[String],
                                    recordNamespace: String,
-                                   schemaRegistry: Option[String]) extends Sink with Logging {
+                                   schemaRegistry: Option[String],
+                                   packageSize: Int) extends Sink with Logging {
   @volatile private var latestBatchId = -1L
 
   override def toString(): String = "KafkaSink"
@@ -39,7 +40,7 @@ private[kafka010] class KafkaSink(
       logInfo(s"Skipping already committed batch $batchId")
     } else {
       KafkaWriter.write(sqlContext.sparkSession,
-        data.queryExecution, executorKafkaParams, topic, recordNamespace, schemaRegistry)
+        data.queryExecution, executorKafkaParams, topic, recordNamespace, schemaRegistry,packageSize)
       latestBatchId = batchId
     }
   }

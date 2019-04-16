@@ -20,7 +20,8 @@ package org.apache.spark.sql.kafka010.avro
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.sql.{Date, Timestamp}
-import java.{ util => ju}
+import java.util.concurrent.atomic.AtomicInteger
+import java.{util => ju}
 
 import org.apache.avro.generic.{GenericData, GenericRecord}
 import org.apache.avro.io.{BinaryEncoder, EncoderFactory}
@@ -40,7 +41,8 @@ private[kafka010] class KafkaWriteTask(
                                         producerConfiguration: ju.Map[String, Object],
                                         schema: StructType,
                                         topic: String,
-                                        recordNamespace: String) {
+                                        recordNamespace: String,
+                                        packageSize:Int) {
   // used to synchronize with Kafka callbacks
   @volatile private var failedWrite: Exception = null
   //  private val projection = createProjection
@@ -54,18 +56,44 @@ private[kafka010] class KafkaWriteTask(
   private lazy val writer: SpecificDatumWriter[GenericRecord] = new SpecificDatumWriter[GenericRecord](avroSchema)
   private lazy val out: ByteArrayOutputStream = new ByteArrayOutputStream(1024 * 1024 * 10)
   private lazy val encoder: BinaryEncoder = EncoderFactory.get().binaryEncoder(out, null)
+  private lazy val counter: AtomicInteger = new AtomicInteger(0)
 
 
   /**
-    * Writes key value data out to topics.
+    * Batch writes value data out to topics.
+    *
     */
   def execute(iterator: Iterator[InternalRow]): Unit = {
     producer = CachedKafkaProducer.getOrCreate(producerConfiguration)
     while (iterator.hasNext && failedWrite == null) {
-      out.reset()
-      val currentRow: InternalRow = iterator.next()
-      val avroRecord = converter(internalRowConverter(currentRow)).asInstanceOf[GenericData.Record]
-      writer.write(avroRecord, encoder)
+      if(counter.incrementAndGet() <= packageSize){
+        val currentRow: InternalRow = iterator.next()
+        val avroRecord = converter(internalRowConverter(currentRow)).asInstanceOf[GenericData.Record]
+        writer.write(avroRecord, encoder)
+      }else{
+        encoder.flush()
+        out.flush()
+        //      val projectedRow = projection(currentRow)
+        //      val topic = projectedRow.getUTF8String(0)
+        //      val key = projectedRow.getBinary(1)
+        //      val value = projectedRow.getBinary(2)
+        //      if (topic == null) {
+        //        throw new NullPointerException(s"null topic present in the data. Use the " +
+        //          s"${KafkaSourceProvider.TOPIC_OPTION_KEY} option for setting a default topic.")
+        //      }
+        val record = new ProducerRecord[Array[Byte], Array[Byte]](topic, null, out.toByteArray)
+        val callback = new Callback() {
+          override def onCompletion(recordMetadata: RecordMetadata, e: Exception): Unit = {
+            if (failedWrite == null && e != null) {
+              failedWrite = e
+            }
+          }
+        }
+        producer.send(record, callback)
+        out.reset()
+      }
+    }
+    if(out.size() != 0) {
       encoder.flush()
       out.flush()
       //      val projectedRow = projection(currentRow)
@@ -85,6 +113,7 @@ private[kafka010] class KafkaWriteTask(
         }
       }
       producer.send(record, callback)
+      out.reset()
     }
   }
 
