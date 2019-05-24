@@ -19,7 +19,7 @@ package org.apache.spark.deploy.k8s.submit
 import org.apache.spark.deploy.k8s.{KubernetesConf, KubernetesDriverSpec, KubernetesDriverSpecificConf, KubernetesRoleSpecificConf}
 import org.apache.spark.deploy.k8s.features.{BasicDriverFeatureStep, DriverKubernetesCredentialsFeatureStep, DriverServiceFeatureStep, EnvSecretsFeatureStep, LocalDirsFeatureStep, MountSecretsFeatureStep, MountVolumesFeatureStep}
 import org.apache.spark.deploy.k8s.features.bindings.{JavaDriverFeatureStep, PythonDriverFeatureStep, RDriverFeatureStep}
-
+import org.apache.spark.deploy.k8s.Constants._
 private[spark] class KubernetesDriverBuilder(
     provideBasicStep: (KubernetesConf[KubernetesDriverSpecificConf]) => BasicDriverFeatureStep =
       new BasicDriverFeatureStep(_),
@@ -84,6 +84,14 @@ private[spark] class KubernetesDriverBuilder(
       secretFeature ++ envSecretFeature ++ volumesFeature
 
     var spec = KubernetesDriverSpec.initialSpec(kubernetesConf.sparkConf.getAll.toMap)
+    //增加特定参数
+    //SPARK_FILES_SECRET_NAME
+    if(kubernetesConf.sparkConf.contains(SPARK_KUBERNETES_FILES)){
+      val kubernetesResourceNamePrefix = kubernetesConf.appResourceNamePrefix
+      val filesConfigMapName = s"$kubernetesResourceNamePrefix-files-conf-map"
+      spec = KubernetesDriverSpec.initialSpec(kubernetesConf.sparkConf.getAll.toMap ++ Map[String,String](SPARK_FILES_SECRET_NAME->filesConfigMapName))
+    }
+
     for (feature <- allFeatures) {
       val configuredPod = feature.configurePod(spec.pod)
       val addedSystemProperties = feature.getAdditionalPodSystemProperties()

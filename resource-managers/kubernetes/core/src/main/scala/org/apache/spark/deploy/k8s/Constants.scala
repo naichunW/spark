@@ -65,6 +65,10 @@ private[spark] object Constants {
   val SPARK_CONF_DIR_INTERNAL = "/opt/spark/conf"
   val SPARK_CONF_FILE_NAME = "spark.properties"
   val SPARK_CONF_PATH = s"$SPARK_CONF_DIR_INTERNAL/$SPARK_CONF_FILE_NAME"
+  val SPARK_FILES_VOLUME = "spark-files-volume"
+  val SPARK_FILES_DIR_INTERNAL = "/opt/spark/files"
+  val SPARK_FILES_SECRET_NAME = "spark.kubernetes.files.secret"
+  val SPARK_KUBERNETES_FILES = "spark.kubernetes.files"
 
   // BINDINGS
   val ENV_PYSPARK_PRIMARY = "PYSPARK_PRIMARY"

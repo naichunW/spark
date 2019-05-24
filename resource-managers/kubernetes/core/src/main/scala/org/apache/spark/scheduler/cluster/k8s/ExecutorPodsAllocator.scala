@@ -18,16 +18,16 @@ package org.apache.spark.scheduler.cluster.k8s
 
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
-import io.fabric8.kubernetes.api.model.PodBuilder
+import io.fabric8.kubernetes.api.model.{ContainerBuilder, PodBuilder}
 import io.fabric8.kubernetes.client.KubernetesClient
-import scala.collection.mutable
-
-import org.apache.spark.{SparkConf, SparkException}
 import org.apache.spark.deploy.k8s.Config._
 import org.apache.spark.deploy.k8s.Constants._
 import org.apache.spark.deploy.k8s.KubernetesConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.util.{Clock, Utils}
+import org.apache.spark.{SparkConf, SparkException}
+
+import scala.collection.mutable
 
 private[spark] class ExecutorPodsAllocator(
     conf: SparkConf,
@@ -79,6 +79,7 @@ private[spark] class ExecutorPodsAllocator(
     // handled the creation request), or the API server created the pod but we missed
     // both the creation and deletion events. In either case, delete the missing pod
     // if possible, and mark such a pod to be rescheduled below.
+    val filesConfigMapName = conf.get(SPARK_FILES_SECRET_NAME)
     newlyCreatedExecutors.foreach { case (execId, timeCreated) =>
       val currentTime = clock.getTimeMillis()
       if (currentTime - timeCreated > podCreationTimeout) {
@@ -129,11 +130,32 @@ private[spark] class ExecutorPodsAllocator(
             applicationId,
             driverPod)
           val executorPod = executorBuilder.buildFromFeatures(executorConf)
-          val podWithAttachedContainer = new PodBuilder(executorPod.pod)
+          var executorContainer = new ContainerBuilder(executorPod.container).build()
+          var podWithAttachedContainer = new PodBuilder(executorPod.pod)
             .editOrNewSpec()
-            .addToContainers(executorPod.container)
+            .addToContainers(executorContainer)
             .endSpec()
             .build()
+          if(null != filesConfigMapName){
+            executorContainer = new ContainerBuilder(executorPod.container)
+              .addNewVolumeMount()
+              .withName(SPARK_FILES_VOLUME)
+              .withMountPath(SPARK_FILES_DIR_INTERNAL)
+              .endVolumeMount()
+              .build()
+            podWithAttachedContainer = new PodBuilder(executorPod.pod)
+              .editOrNewSpec()
+              .addToContainers(executorContainer)
+              .addNewVolume()
+              .withName(SPARK_FILES_VOLUME)
+              .withNewSecret()
+              .withSecretName(filesConfigMapName)
+              .endSecret()
+              .endVolume()
+              .endSpec()
+              .build()
+          }
+
           kubernetesClient.pods().create(podWithAttachedContainer)
           newlyCreatedExecutors(newExecutorId) = clock.getTimeMillis()
           logDebug(s"Requested executor with id $newExecutorId from Kubernetes.")

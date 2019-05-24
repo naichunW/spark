@@ -16,36 +16,36 @@
  */
 package org.apache.spark.deploy.k8s.submit
 
-import java.io.StringWriter
-import java.util.{Collections, UUID}
-import java.util.Properties
+import java.io.{File, FileInputStream, StringWriter}
+import java.util.{Collections, Properties, UUID}
 
+import com.google.common.io.{BaseEncoding, Files}
 import io.fabric8.kubernetes.api.model._
 import io.fabric8.kubernetes.client.KubernetesClient
-import scala.collection.mutable
-import scala.util.control.NonFatal
-
 import org.apache.spark.SparkConf
 import org.apache.spark.deploy.SparkApplication
-import org.apache.spark.deploy.k8s.{KubernetesConf, KubernetesDriverSpecificConf, KubernetesUtils, SparkKubernetesClientFactory}
 import org.apache.spark.deploy.k8s.Config._
 import org.apache.spark.deploy.k8s.Constants._
+import org.apache.spark.deploy.k8s.{KubernetesConf, KubernetesDriverSpecificConf, KubernetesUtils, SparkKubernetesClientFactory}
 import org.apache.spark.internal.Logging
 import org.apache.spark.util.Utils
 
+import scala.collection.mutable
+import scala.util.control.NonFatal
+
 /**
- * Encapsulates arguments to the submission client.
- *
- * @param mainAppResource the main application resource if any
- * @param mainClass the main class of the application to run
- * @param driverArgs arguments to the driver
- * @param maybePyFiles additional Python files via --py-files
- */
+  * Encapsulates arguments to the submission client.
+  *
+  * @param mainAppResource the main application resource if any
+  * @param mainClass       the main class of the application to run
+  * @param driverArgs      arguments to the driver
+  * @param maybePyFiles    additional Python files via --py-files
+  */
 private[spark] case class ClientArguments(
-    mainAppResource: Option[MainAppResource],
-    mainClass: String,
-    driverArgs: Array[String],
-    maybePyFiles: Option[String])
+                                           mainAppResource: Option[MainAppResource],
+                                           mainClass: String,
+                                           driverArgs: Array[String],
+                                           maybePyFiles: Option[String])
 
 private[spark] object ClientArguments {
 
@@ -53,7 +53,7 @@ private[spark] object ClientArguments {
     var mainAppResource: Option[MainAppResource] = None
     var mainClass: Option[String] = None
     val driverArgs = mutable.ArrayBuffer.empty[String]
-    var maybePyFiles : Option[String] = None
+    var maybePyFiles: Option[String] = None
 
     args.sliding(2, 2).toList.foreach {
       case Array("--primary-java-resource", primaryJavaResource: String) =>
@@ -84,27 +84,27 @@ private[spark] object ClientArguments {
 }
 
 /**
- * Submits a Spark application to run on Kubernetes by creating the driver pod and starting a
- * watcher that monitors and logs the application status. Waits for the application to terminate if
- * spark.kubernetes.submission.waitAppCompletion is true.
- *
- * @param builder Responsible for building the base driver pod based on a composition of
- *                implemented features.
- * @param kubernetesConf application configuration
- * @param kubernetesClient the client to talk to the Kubernetes API server
- * @param waitForAppCompletion a flag indicating whether the client should wait for the application
- *                             to complete
- * @param appName the application name
- * @param watcher a watcher that monitors and logs the application status
- */
+  * Submits a Spark application to run on Kubernetes by creating the driver pod and starting a
+  * watcher that monitors and logs the application status. Waits for the application to terminate if
+  * spark.kubernetes.submission.waitAppCompletion is true.
+  *
+  * @param builder              Responsible for building the base driver pod based on a composition of
+  *                             implemented features.
+  * @param kubernetesConf       application configuration
+  * @param kubernetesClient     the client to talk to the Kubernetes API server
+  * @param waitForAppCompletion a flag indicating whether the client should wait for the application
+  *                             to complete
+  * @param appName              the application name
+  * @param watcher              a watcher that monitors and logs the application status
+  */
 private[spark] class Client(
-    builder: KubernetesDriverBuilder,
-    kubernetesConf: KubernetesConf[KubernetesDriverSpecificConf],
-    kubernetesClient: KubernetesClient,
-    waitForAppCompletion: Boolean,
-    appName: String,
-    watcher: LoggingPodStatusWatcher,
-    kubernetesResourceNamePrefix: String) extends Logging {
+                             builder: KubernetesDriverBuilder,
+                             kubernetesConf: KubernetesConf[KubernetesDriverSpecificConf],
+                             kubernetesClient: KubernetesClient,
+                             waitForAppCompletion: Boolean,
+                             appName: String,
+                             watcher: LoggingPodStatusWatcher,
+                             kubernetesResourceNamePrefix: String) extends Logging {
 
   def run(): Unit = {
     val resolvedDriverSpec = builder.buildFromFeatures(kubernetesConf)
@@ -112,27 +112,68 @@ private[spark] class Client(
     val configMap = buildConfigMap(configMapName, resolvedDriverSpec.systemProperties)
     // The include of the ENV_VAR for "SPARK_CONF_DIR" is to allow for the
     // Spark command builder to pickup on the Java Options present in the ConfigMap
-    val resolvedDriverContainer = new ContainerBuilder(resolvedDriverSpec.pod.container)
+
+    var resolvedDriverContainer = new ContainerBuilder(resolvedDriverSpec.pod.container)
       .addNewEnv()
+      .withName(ENV_SPARK_CONF_DIR)
+      .withValue(SPARK_CONF_DIR_INTERNAL)
+      .endEnv()
+      .addNewVolumeMount()
+      .withName(SPARK_CONF_VOLUME)
+      .withMountPath(SPARK_CONF_DIR_INTERNAL)
+      .endVolumeMount()
+      .build()
+    var resolvedDriverPod = new PodBuilder(resolvedDriverSpec.pod.pod)
+      .editSpec()
+      .addToContainers(resolvedDriverContainer)
+      .addNewVolume()
+      .withName(SPARK_CONF_VOLUME)
+      .withNewConfigMap()
+      .withName(configMapName)
+      .endConfigMap()
+      .endVolume()
+      .endSpec()
+      .build()
+    var addResources = Seq[HasMetadata](configMap)
+
+    //TODO 将spark.kubernetes.files的所有文件，挂载在特定的Secret,并挂载到目录/var/spark/files
+    if(kubernetesConf.sparkConf.contains(SPARK_KUBERNETES_FILES)){
+      val filesConfigMapName =resolvedDriverSpec.systemProperties.get(SPARK_FILES_SECRET_NAME).get
+      val files = kubernetesConf.sparkConf.get(SPARK_KUBERNETES_FILES).split(",")
+      val filesSecret = buildSecret(filesConfigMapName, files)
+      resolvedDriverContainer = new ContainerBuilder(resolvedDriverSpec.pod.container)
+        .addNewEnv()
         .withName(ENV_SPARK_CONF_DIR)
         .withValue(SPARK_CONF_DIR_INTERNAL)
         .endEnv()
-      .addNewVolumeMount()
+        .addNewVolumeMount()
         .withName(SPARK_CONF_VOLUME)
         .withMountPath(SPARK_CONF_DIR_INTERNAL)
         .endVolumeMount()
-      .build()
-    val resolvedDriverPod = new PodBuilder(resolvedDriverSpec.pod.pod)
-      .editSpec()
+        .addNewVolumeMount()
+        .withName(SPARK_FILES_VOLUME)
+        .withMountPath(SPARK_FILES_DIR_INTERNAL)
+        .endVolumeMount()
+        .build()
+      resolvedDriverPod = new PodBuilder(resolvedDriverSpec.pod.pod)
+        .editSpec()
         .addToContainers(resolvedDriverContainer)
         .addNewVolume()
-          .withName(SPARK_CONF_VOLUME)
-          .withNewConfigMap()
-            .withName(configMapName)
-            .endConfigMap()
-          .endVolume()
+        .withName(SPARK_CONF_VOLUME)
+        .withNewConfigMap()
+        .withName(configMapName)
+        .endConfigMap()
+        .endVolume()
+        .addNewVolume()
+        .withName(SPARK_FILES_VOLUME)
+        .withNewSecret()
+        .withSecretName(filesConfigMapName)
+        .endSecret()
+        .endVolume()
         .endSpec()
-      .build()
+        .build()
+      addResources = Seq[HasMetadata](configMap,filesSecret)
+    }
     Utils.tryWithResource(
       kubernetesClient
         .pods()
@@ -140,9 +181,9 @@ private[spark] class Client(
         .watch(watcher)) { _ =>
       val createdDriverPod = kubernetesClient.pods().create(resolvedDriverPod)
       try {
-        val otherKubernetesResources =
-          resolvedDriverSpec.driverKubernetesResources ++ Seq(configMap)
-        addDriverOwnerReference(createdDriverPod, otherKubernetesResources)
+        val otherKubernetesResources: Seq[HasMetadata] =
+          resolvedDriverSpec.driverKubernetesResources ++ addResources
+        addDriverOwnerReference(createdDriverPod, otherKubernetesResources )
         kubernetesClient.resourceList(otherKubernetesResources: _*).createOrReplace()
       } catch {
         case NonFatal(e) =>
@@ -187,16 +228,32 @@ private[spark] class Client(
       s"Java properties built from Kubernetes config map with name: $configMapName")
     new ConfigMapBuilder()
       .withNewMetadata()
-        .withName(configMapName)
-        .endMetadata()
+      .withName(configMapName)
+      .endMetadata()
       .addToData(SPARK_CONF_FILE_NAME, propertiesWriter.toString)
       .build()
+  }
+
+  //读取文件内容，添加到Secret中
+  private def buildSecret(configMapName: String, files: Seq[String]): Secret = {
+    val builder = new SecretBuilder()
+    builder.withNewMetadata().withName(configMapName).endMetadata()
+    for(filePath<-files){
+      val path = filePath.substring(filePath.indexOf(':')+1,filePath.length)
+      val file = new File(path)
+      require(file.isFile, String.format("%s does not exist or is not a file.",
+        file.getAbsolutePath))
+      val fileName = file.getName
+      val data = BaseEncoding.base64().encode(Files.toByteArray(file))
+      builder.addToData(fileName,data)
+    }
+    builder.build()
   }
 }
 
 /**
- * Main class and entry point of application submission in KUBERNETES mode.
- */
+  * Main class and entry point of application submission in KUBERNETES mode.
+  */
 private[spark] class KubernetesClientApplication extends SparkApplication {
 
   override def start(args: Array[String], conf: SparkConf): Unit = {
@@ -239,15 +296,15 @@ private[spark] class KubernetesClientApplication extends SparkApplication {
       sparkConf,
       None,
       None)) { kubernetesClient =>
-        val client = new Client(
-          builder,
-          kubernetesConf,
-          kubernetesClient,
-          waitForAppCompletion,
-          appName,
-          watcher,
-          kubernetesResourceNamePrefix)
-        client.run()
+      val client = new Client(
+        builder,
+        kubernetesConf,
+        kubernetesClient,
+        waitForAppCompletion,
+        appName,
+        watcher,
+        kubernetesResourceNamePrefix)
+      client.run()
     }
   }
 }
