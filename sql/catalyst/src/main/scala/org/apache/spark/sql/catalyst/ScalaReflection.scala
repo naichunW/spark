@@ -72,7 +72,7 @@ object ScalaReflection extends ScalaReflection {
   /**
    * Synchronize to prevent concurrent usage of `<:<` operator.
    * This operator is not thread safe in any current version of scala; i.e.
-   * (2.11.12, 2.12.8, 2.13.0-M5).
+   * (2.11.12, 2.12.10, 2.13.0-M5).
    *
    * See https://github.com/scala/bug/issues/10766
    */
@@ -127,7 +127,7 @@ object ScalaReflection extends ScalaReflection {
       case other =>
         // There is probably a better way to do this, but I couldn't find it...
         val elementType = dataTypeFor(other).asInstanceOf[ObjectType].cls
-        java.lang.reflect.Array.newInstance(elementType, 1).getClass
+        java.lang.reflect.Array.newInstance(elementType, 0).getClass
 
     }
     ObjectType(cls)
@@ -611,10 +611,39 @@ object ScalaReflection extends ScalaReflection {
     }
   }
 
+  private def erasure(tpe: Type): Type = {
+    // For user-defined AnyVal classes, we should not erasure it. Otherwise, it will
+    // resolve to underlying type which wrapped by this class, e.g erasure
+    // `case class Foo(i: Int) extends AnyVal` will return type `Int` instead of `Foo`.
+    // But, for other types, we do need to erasure it. For example, we need to erasure
+    // `scala.Any` to `java.lang.Object` in order to load it from Java ClassLoader.
+    // Please see SPARK-17368 & SPARK-31190 for more details.
+    if (isSubtype(tpe, localTypeOf[AnyVal]) && !tpe.toString.startsWith("scala")) {
+      tpe
+    } else {
+      tpe.erasure
+    }
+  }
+
+  /**
+   * Returns the full class name for a type. The returned name is the canonical
+   * Scala name, where each component is separated by a period. It is NOT the
+   * Java-equivalent runtime name (no dollar signs).
+   *
+   * In simple cases, both the Scala and Java names are the same, however when Scala
+   * generates constructs that do not map to a Java equivalent, such as singleton objects
+   * or nested classes in package objects, it uses the dollar sign ($) to create
+   * synthetic classes, emulating behaviour in Java bytecode.
+   */
+  def getClassNameFromType(tpe: `Type`): String = {
+    erasure(tpe).dealias.typeSymbol.asClass.fullName
+  }
+
   /*
    * Retrieves the runtime class corresponding to the provided type.
    */
-  def getClassFromType(tpe: Type): Class[_] = mirror.runtimeClass(tpe.dealias.typeSymbol.asClass)
+  def getClassFromType(tpe: Type): Class[_] =
+    mirror.runtimeClass(erasure(tpe).dealias.typeSymbol.asClass)
 
   case class Schema(dataType: DataType, nullable: Boolean)
 
@@ -864,20 +893,6 @@ trait ScalaReflection extends Logging {
   }
 
   /**
-   * Returns the full class name for a type. The returned name is the canonical
-   * Scala name, where each component is separated by a period. It is NOT the
-   * Java-equivalent runtime name (no dollar signs).
-   *
-   * In simple cases, both the Scala and Java names are the same, however when Scala
-   * generates constructs that do not map to a Java equivalent, such as singleton objects
-   * or nested classes in package objects, it uses the dollar sign ($) to create
-   * synthetic classes, emulating behaviour in Java bytecode.
-   */
-  def getClassNameFromType(tpe: `Type`): String = {
-    tpe.dealias.erasure.typeSymbol.asClass.fullName
-  }
-
-  /**
    * Returns the parameter names and types for the primary constructor of this type.
    *
    * Note that it only works for scala classes with primary constructor, and currently doesn't
@@ -906,7 +921,18 @@ trait ScalaReflection extends Logging {
    * only defines a constructor via `apply` method.
    */
   private def getCompanionConstructor(tpe: Type): Symbol = {
-    tpe.typeSymbol.asClass.companion.asTerm.typeSignature.member(universe.TermName("apply"))
+    def throwUnsupportedOperation = {
+      throw new UnsupportedOperationException(s"Unable to find constructor for $tpe. " +
+        s"This could happen if $tpe is an interface, or a trait without companion object " +
+        "constructor.")
+    }
+    tpe.typeSymbol.asClass.companion match {
+      case NoSymbol => throwUnsupportedOperation
+      case sym => sym.asTerm.typeSignature.member(universe.TermName("apply")) match {
+        case NoSymbol => throwUnsupportedOperation
+        case constructorSym => constructorSym
+      }
+    }
   }
 
   protected def constructParams(tpe: Type): Seq[Symbol] = {
